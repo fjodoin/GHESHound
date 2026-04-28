@@ -80,7 +80,11 @@ function New-GithubSession {
 
         [Parameter(Mandatory = $false)]
         [switch]
-        $IsGHES
+        $IsGHES,
+
+        [Parameter(Mandatory = $false)]
+        [switch]
+        $SkipCertificateCheck
     )
 
     if($Headers['Accept']) {
@@ -125,6 +129,7 @@ function New-GithubSession {
         Uri = $ApiUri
         GraphQlUri = $GraphQlUri
         IsGHES = [bool]$IsGHES
+        SkipCertificateCheck = [bool]$SkipCertificateCheck
         Headers = $Headers
         OrganizationName = $OrganizationName
         EnterpriseName = $EnterpriseName
@@ -425,11 +430,18 @@ function Invoke-GithubRestMethod {
             
             while (-not $requestSuccessful -and $retryCount -lt 3) {
                 try {
+                    $iwrParams = @{
+                        Headers     = $Headers
+                        Method      = $Method
+                        ErrorAction = 'Stop'
+                    }
+                    if ($Session.SkipCertificateCheck) { $iwrParams['SkipCertificateCheck'] = $true }
+
                     if($LinkHeader) {
-                        $Response = Invoke-WebRequest -Uri "$LinkHeader" -Headers $Headers -Method $Method -ErrorAction Stop
+                        $Response = Invoke-WebRequest -Uri "$LinkHeader" @iwrParams
                     } else {
                         Write-Verbose "https://api.github.com/$($Path)"
-                        $Response = Invoke-WebRequest -Uri "$($Session.Uri)$($Path)" -Headers $Headers -Method $Method -ErrorAction Stop
+                        $Response = Invoke-WebRequest -Uri "$($Session.Uri)$($Path)" @iwrParams
                     }
                     $requestSuccessful = $true
                 }
@@ -518,6 +530,8 @@ function Invoke-GitHubGraphQL
         Headers = $Headers
         Body = $Body
     }
+    if ($Session.SkipCertificateCheck) { $fparams['SkipCertificateCheck'] = $true }
+
     $requestSuccessful = $false
     $retryCount = 0
     $maxRetries = 5
@@ -10050,7 +10064,11 @@ function Invoke-GitHoundGHES
 
         [Parameter()]
         [switch]
-        $WorkflowsAllBranches
+        $WorkflowsAllBranches,
+
+        [Parameter()]
+        [switch]
+        $SkipCertificateCheck
     )
 
     # Normalize server URL
@@ -10063,7 +10081,9 @@ function Invoke-GitHoundGHES
     Write-Host "[*] Target: $ServerUrl"
 
     # Create GHES session
-    $baseSession = New-GithubSession -ApiUri $apiUri -Token $Token -IsGHES
+    $sessionParams = @{ ApiUri = $apiUri; Token = $Token; IsGHES = $true }
+    if ($SkipCertificateCheck) { $sessionParams['SkipCertificateCheck'] = $true }
+    $baseSession = New-GithubSession @sessionParams
 
     # ── Step 1: Discover Organizations ───────────────────────────────────
     if ($OrganizationName) {
@@ -10111,7 +10131,9 @@ function Invoke-GitHoundGHES
             $CheckpointPath
         }
 
-        $orgSession = New-GithubSession -OrganizationName $orgLogin -ApiUri $apiUri -Token $Token -IsGHES
+        $orgSessionParams = @{ OrganizationName = $orgLogin; ApiUri = $apiUri; Token = $Token; IsGHES = $true }
+        if ($SkipCertificateCheck) { $orgSessionParams['SkipCertificateCheck'] = $true }
+        $orgSession = New-GithubSession @orgSessionParams
 
         $invokeParams = @{
             Session               = $orgSession
