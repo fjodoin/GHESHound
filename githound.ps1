@@ -601,9 +601,32 @@ function Get-RateLimitInformation
         [PSTypeName('GitHound.Session')]
         $Session
     )
+
+    # GHES instances may have rate limiting disabled, returning 404 on /rate_limit.
+    # Return a stub with effectively unlimited budget so callers don't block.
+    if ($Session.IsGHES) {
+        try {
+            $rateLimitInfo = Invoke-GithubRestMethod -Session $Session -Path "rate_limit" -ErrorMode Stop
+            if ($rateLimitInfo -and $rateLimitInfo.resources) {
+                return $rateLimitInfo.resources
+            }
+        } catch {
+            # Rate limiting not enabled on this GHES instance — return unlimited stub
+        }
+        $unlimitedStub = [PSCustomObject]@{
+            remaining = 999999
+            limit     = 999999
+            used      = 0
+            reset     = ([DateTimeOffset]::Now.AddHours(1).ToUnixTimeSeconds())
+        }
+        return [PSCustomObject]@{
+            core    = $unlimitedStub
+            graphql = $unlimitedStub
+        }
+    }
+
     $rateLimitInfo = Invoke-GithubRestMethod -Session $Session -Path "rate_limit"
     return $rateLimitInfo.resources
-    
 }
 
 function Wait-GithubRateLimitReached {
