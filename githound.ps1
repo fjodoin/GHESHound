@@ -76,7 +76,11 @@ function New-GithubSession {
 
         [Parameter(Mandatory = $false)]
         [string]
-        $PrivateKeyPath
+        $PrivateKeyPath,
+
+        [Parameter(Mandatory = $false)]
+        [switch]
+        $IsGHES
     )
 
     if($Headers['Accept']) {
@@ -107,9 +111,20 @@ function New-GithubSession {
         }
     }
 
+    # Compute GraphQL URI based on API base
+    $GraphQlUri = if ($IsGHES) {
+        # GHES: https://HOSTNAME/api/v3/ → https://HOSTNAME/api/graphql
+        $baseUri = $ApiUri -replace '/api/v3/?$', ''
+        "$baseUri/api/graphql"
+    } else {
+        "https://api.github.com/graphql"
+    }
+
     [PSCustomObject]@{
         PSTypeName = 'GitHound.Session'
         Uri = $ApiUri
+        GraphQlUri = $GraphQlUri
+        IsGHES = [bool]$IsGHES
         Headers = $Headers
         OrganizationName = $OrganizationName
         EnterpriseName = $EnterpriseName
@@ -468,7 +483,7 @@ function Invoke-GitHubGraphQL
         $Session,
         [Parameter()]
         [string]
-        $Uri = "https://api.github.com/graphql",
+        $Uri,
 
         [Parameter()]
         [hashtable]
@@ -482,6 +497,11 @@ function Invoke-GitHubGraphQL
         [hashtable]
         $Variables
     )
+
+    # Derive GraphQL URI from session if not explicitly provided
+    if (-not $Uri) {
+        $Uri = if ($Session.GraphQlUri) { $Session.GraphQlUri } else { "https://api.github.com/graphql" }
+    }
 
     if (-not $Headers) {
         $Headers = $Session.Headers
@@ -8973,7 +8993,11 @@ function Invoke-GitHound
 
         [Parameter()]
         [switch]
-        $WorkflowsAllBranches
+        $WorkflowsAllBranches,
+
+        [Parameter()]
+        [switch]
+        $IsGHES
     )
 
     $nodes = New-Object System.Collections.ArrayList
@@ -9381,6 +9405,7 @@ function Invoke-GitHound
     }
 
     # ── SAML (separate output, not included in consolidated payload) ──────
+    if (-not $IsGHES) {
     Write-Host "[*] Enumerating SAML Identity Provider"
     $samlNodes = New-Object System.Collections.ArrayList
     $samlEdges = New-Object System.Collections.ArrayList
@@ -9446,6 +9471,9 @@ function Invoke-GitHound
     {
         Write-Host "[*] Skipping OIDC Subject Parsing (no federated identity credential data found at $fidcJsonPath)"
         Write-Host "    To enable, provide AZFederatedIdentityCredential data in: $fidcJsonPath"
+    }
+    } else {
+        Write-Host "[*] Skipping SAML/SCIM/OIDC (not applicable in GHES mode — LDAP identity handled at server level)"
     }
 
     Write-Host "[+] GitHound collection complete for $($Session.OrganizationName)."
@@ -9812,4 +9840,301 @@ function Invoke-GitHoundEnterprise
     }
 
     Write-Host "[+] GitHound enterprise wrapper complete for $enterpriseSlug."
+}
+
+# ══════════════════════════════════════════════════════════════════════════════
+# GHES-SPECIFIC FUNCTIONS
+# ══════════════════════════════════════════════════════════════════════════════
+
+function Git-HoundGHESAllUsers
+{
+    <#
+    .SYNOPSIS
+        Collects all users from a GHES appliance via REST API, including LDAP DN information.
+
+    .DESCRIPTION
+        Enumerates all users on the GHES instance using the REST /users endpoint (paginated).
+        For each user, retrieves full details including ldap_dn via /users/{login}.
+        Creates GH_User nodes enriched with LDAP identity data and auth_type classification.
+        For LDAP-authenticated users, creates GH_SyncedTo edges to AD User nodes
+        matched by the distinguished name property.
+
+    .PARAMETER Session
+        A GitHound.Session object (GHES mode) with site-admin credentials.
+    #>
+    Param(
+        [Parameter(Position = 0, Mandatory = $true)]
+        [PSTypeName('GitHound.Session')]
+        $Session
+    )
+
+    $nodes = New-Object System.Collections.ArrayList
+    $edges = New-Object System.Collections.ArrayList
+
+    Write-Host "[*] Enumerating all GHES users with LDAP identity data"
+
+    # Paginate through all users via REST /users endpoint
+    $allUsers = @(Invoke-GithubRestMethod -Session $Session -Path "users?per_page=100")
+
+    # Filter to actual user accounts (skip orgs and bots)
+    $userAccounts = @($allUsers | Where-Object { $_.type -eq 'User' -and $_.login -notlike '*[bot]' })
+
+    Write-Host "[*] Found $($userAccounts.Count) user accounts, fetching LDAP details..."
+
+    $ldapCount = 0
+    $localCount = 0
+
+    foreach ($user in $userAccounts) {
+        # Get full user details including ldap_dn
+        try {
+            $userDetail = Invoke-GithubRestMethod -Session $Session -Path "users/$($user.login)" -ErrorMode Stop
+        } catch {
+            Write-Warning "Failed to fetch details for user $($user.login): $_"
+            continue
+        }
+
+        $ldapDn = $userDetail.ldap_dn
+        $authType = if ($ldapDn) { 'ldap' } else { 'local' }
+
+        $properties = @{
+            name           = Normalize-Null $userDetail.login
+            node_id        = Normalize-Null $userDetail.node_id
+            login          = Normalize-Null $userDetail.login
+            full_name      = Normalize-Null $userDetail.name
+            email          = Normalize-Null $userDetail.email
+            company        = Normalize-Null $userDetail.company
+            site_admin     = $userDetail.site_admin
+            ldap_dn        = Normalize-Null $ldapDn
+            auth_type      = $authType
+            suspended      = ($null -ne $userDetail.suspended_at)
+            created_at     = Normalize-Null $userDetail.created_at
+        }
+
+        $null = $nodes.Add((New-GitHoundNode -Id $userDetail.node_id -Kind 'GH_User' -Properties $properties))
+
+        # For LDAP-authenticated users, create a GH_SyncedTo edge to the AD User
+        if ($ldapDn) {
+            $ldapCount++
+            # BH CE stores distinguishedname in UPPERCASE
+            $dnUpper = $ldapDn.ToUpper()
+
+            $null = $edges.Add((New-GitHoundEdge `
+                -Kind 'GH_SyncedTo' `
+                -StartKind 'User' `
+                -StartPropertyMatchers @(
+                    (New-BHOGPropertyMatcher -Key 'distinguishedname' -Value $dnUpper)
+                ) `
+                -EndId $userDetail.node_id `
+                -Properties @{ traversable = $true }
+            ))
+        } else {
+            $localCount++
+        }
+    }
+
+    Write-Host "[+] Processed $($userAccounts.Count) users: $ldapCount LDAP-linked, $localCount local"
+
+    [PSCustomObject]@{
+        Nodes = $nodes
+        Edges = $edges
+    }
+}
+
+function Git-HoundGHESOrganizations
+{
+    <#
+    .SYNOPSIS
+        Discovers all organizations on a GHES appliance.
+
+    .DESCRIPTION
+        Lists all organizations via the REST /organizations endpoint and returns
+        their login names for subsequent per-org collection.
+
+    .PARAMETER Session
+        A GitHound.Session object (GHES mode).
+    #>
+    Param(
+        [Parameter(Position = 0, Mandatory = $true)]
+        [PSTypeName('GitHound.Session')]
+        $Session
+    )
+
+    $allOrgs = @(Invoke-GithubRestMethod -Session $Session -Path "organizations?per_page=100")
+
+    # Filter out system orgs
+    $systemOrgs = @('actions', 'github')
+    $userOrgs = @($allOrgs | Where-Object { $_.login -notin $systemOrgs })
+
+    Write-Host "[*] Found $($userOrgs.Count) organization(s): $($userOrgs.login -join ', ')"
+
+    return $userOrgs
+}
+
+function Invoke-GitHoundGHES
+{
+    <#
+    .SYNOPSIS
+        Orchestrates GitHound collection for a GitHub Enterprise Server (GHES) appliance.
+
+    .DESCRIPTION
+        This is the top-level entry point for collecting data from a GHES instance
+        using LDAP authentication. It performs the following:
+
+        1. Discovers all organizations on the GHES appliance
+        2. Collects all GHES users (server-wide) with LDAP identity mappings
+        3. Creates GH_SyncedTo edges from AD User nodes to GHES GH_User nodes
+        4. For each organization, runs the standard GitHound org-level collection
+           (teams, repos, branches, secrets, etc.) with SAML/SCIM disabled
+        5. Outputs a consolidated server-wide LDAP identity payload
+
+    .PARAMETER ServerUrl
+        The base URL of the GHES instance (e.g., https://github.example.com).
+
+    .PARAMETER Token
+        A Personal Access Token (classic) with site-admin privileges.
+
+    .PARAMETER OrganizationName
+        Optional. If specified, only collects data for this single organization
+        instead of auto-discovering all organizations on the appliance.
+
+    .PARAMETER CheckpointPath
+        Directory for output files. Defaults to the current directory.
+
+    .PARAMETER Resume
+        When set, reuses existing step files for crash recovery.
+
+    .PARAMETER CleanupIntermediates
+        When set, deletes per-step files after consolidation.
+
+    .PARAMETER CollectAll
+        When set, collects optional data (workflows, environments, secrets, etc.).
+
+    .PARAMETER WorkflowsAllBranches
+        When set, enumerates all branches for workflow discovery.
+
+    .EXAMPLE
+        Invoke-GitHoundGHES -ServerUrl "https://ghes.example.com" -Token "ghp_xxx"
+
+    .EXAMPLE
+        Invoke-GitHoundGHES -ServerUrl "https://ghes.example.com" -Token "ghp_xxx" -OrganizationName "corp" -CollectAll
+    #>
+    [CmdletBinding()]
+    Param(
+        [Parameter(Position = 0, Mandatory = $true)]
+        [string]
+        $ServerUrl,
+
+        [Parameter(Position = 1, Mandatory = $true)]
+        [string]
+        $Token,
+
+        [Parameter()]
+        [string]
+        $OrganizationName,
+
+        [Parameter()]
+        [string]
+        $CheckpointPath = ".",
+
+        [Parameter()]
+        [switch]
+        $Resume,
+
+        [Parameter()]
+        [switch]
+        $CleanupIntermediates,
+
+        [Parameter()]
+        [switch]
+        $CollectAll,
+
+        [Parameter()]
+        [switch]
+        $WorkflowsAllBranches
+    )
+
+    # Normalize server URL
+    $ServerUrl = $ServerUrl.TrimEnd('/')
+    $apiUri = "$ServerUrl/api/v3/"
+
+    Write-Host "╔══════════════════════════════════════════════════════════════╗"
+    Write-Host "║  GHESHound — GitHub Enterprise Server Collector (LDAP mode) ║"
+    Write-Host "╚══════════════════════════════════════════════════════════════╝"
+    Write-Host "[*] Target: $ServerUrl"
+
+    # Create GHES session
+    $baseSession = New-GithubSession -ApiUri $apiUri -Token $Token -IsGHES
+
+    # ── Step 1: Discover Organizations ───────────────────────────────────
+    if ($OrganizationName) {
+        $orgLogins = @($OrganizationName)
+        Write-Host "[*] Single-org mode: targeting '$OrganizationName'"
+    } else {
+        $orgs = Git-HoundGHESOrganizations -Session $baseSession
+        $orgLogins = @($orgs | ForEach-Object { $_.login })
+    }
+
+    # ── Step 2: Server-wide LDAP Identity Collection ─────────────────────
+    $ldapStepFile = Join-Path $CheckpointPath "githound_GHESLdapIdentity.json"
+    if ($Resume -and (Test-Path $ldapStepFile)) {
+        Write-Host "[*] Resuming: Loaded GHES LDAP Identity data from githound_GHESLdapIdentity.json"
+        $ldapIdentity = Import-GitHoundStepOutput -FilePath $ldapStepFile
+    } else {
+        $ldapIdentity = Git-HoundGHESAllUsers -Session $baseSession
+        Export-GitHoundStepOutput -StepResult $ldapIdentity -FilePath $ldapStepFile
+        Write-Host "[+] Saved: githound_GHESLdapIdentity.json"
+    }
+
+    # Write LDAP identity payload (separate file, like SAML in cloud mode)
+    $ldapPayload = [PSCustomObject]@{
+        '$schema' = "https://raw.githubusercontent.com/MichaelGrafnetter/EntraAuthPolicyHound/refs/heads/main/bloodhound-opengraph.schema.json"
+        graph = [PSCustomObject]@{
+            nodes = @($ldapIdentity.Nodes | Where-Object { $_ -ne $null })
+            edges = @($ldapIdentity.Edges | Where-Object { $_ -ne $null })
+        }
+    }
+    $ldapPayload | ConvertTo-Json -Depth 10 | Out-File -FilePath (Join-Path $CheckpointPath "githound_ldap_identity.json")
+    $ldapNodeCount = @($ldapIdentity.Nodes | Where-Object { $_ -ne $null }).Count
+    $ldapEdgeCount = @($ldapIdentity.Edges | Where-Object { $_ -ne $null }).Count
+    Write-Host "[+] LDAP identity payload: githound_ldap_identity.json ($ldapNodeCount nodes, $ldapEdgeCount edges)"
+
+    # ── Step 3: Per-Organization Collection ──────────────────────────────
+    foreach ($orgLogin in $orgLogins) {
+        Write-Host ""
+        Write-Host "[*] ═══ Organization: $orgLogin ═══"
+
+        $orgCheckpointPath = if ($orgLogins.Count -gt 1) {
+            $p = Join-Path $CheckpointPath $orgLogin
+            if (-not (Test-Path $p)) { $null = New-Item -ItemType Directory -Path $p -Force }
+            $p
+        } else {
+            $CheckpointPath
+        }
+
+        $orgSession = New-GithubSession -OrganizationName $orgLogin -ApiUri $apiUri -Token $Token -IsGHES
+
+        $invokeParams = @{
+            Session               = $orgSession
+            CheckpointPath        = $orgCheckpointPath
+            Resume                = $Resume
+            CleanupIntermediates  = $CleanupIntermediates
+            CollectAll            = $CollectAll
+            WorkflowsAllBranches  = $WorkflowsAllBranches
+            IsGHES                = $true
+        }
+
+        Invoke-GitHound @invokeParams
+    }
+
+    # ── Cleanup ──────────────────────────────────────────────────────────
+    if ($CleanupIntermediates) {
+        $ldapStepFile = Join-Path $CheckpointPath "githound_GHESLdapIdentity.json"
+        if (Test-Path $ldapStepFile) {
+            Remove-Item $ldapStepFile -Force
+        }
+    }
+
+    Write-Host ""
+    Write-Host "[+] GHESHound collection complete for $ServerUrl"
+    Write-Host "[+] Identity payload: githound_ldap_identity.json (ingest into BloodHound alongside org payloads)"
 }
