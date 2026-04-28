@@ -3215,9 +3215,20 @@ function Git-HoundOrganization
     $edges = New-Object System.Collections.ArrayList
 
     $org = Invoke-GithubRestMethod -Session $Session -Path "orgs/$($Session.OrganizationName)"
-    $actions = Invoke-GithubRestMethod -Session $session -Path "orgs/$($Session.OrganizationName)/actions/permissions"
-    $workflowPerms = Invoke-GithubRestMethod -Session $session -Path "orgs/$($Session.OrganizationName)/actions/permissions/workflow"
-    $selfHostedRunnerSettings = Invoke-GithubRestMethod -Session $session -Path "orgs/$($Session.OrganizationName)/actions/permissions/self-hosted-runners"
+
+    # Actions permissions — may not be available on all GHES instances
+    $actions = $null
+    $workflowPerms = $null
+    $selfHostedRunnerSettings = $null
+    try {
+        $actions = Invoke-GithubRestMethod -Session $session -Path "orgs/$($Session.OrganizationName)/actions/permissions" -ErrorMode Stop
+    } catch { Write-Host "[*] Skipped: orgs/actions/permissions (not available on this instance)" }
+    try {
+        $workflowPerms = Invoke-GithubRestMethod -Session $session -Path "orgs/$($Session.OrganizationName)/actions/permissions/workflow" -ErrorMode Stop
+    } catch { Write-Host "[*] Skipped: orgs/actions/permissions/workflow (not available on this instance)" }
+    try {
+        $selfHostedRunnerSettings = Invoke-GithubRestMethod -Session $session -Path "orgs/$($Session.OrganizationName)/actions/permissions/self-hosted-runners" -ErrorMode Stop
+    } catch { Write-Host "[*] Skipped: orgs/actions/permissions/self-hosted-runners (not available on this instance)" }
 
     $properties = [pscustomobject]@{
         # Common Properties
@@ -3935,18 +3946,25 @@ function Git-HoundRepository
     $nodes = [System.Collections.Concurrent.ConcurrentBag[PSObject]]::new()
     $edges = [System.Collections.Concurrent.ConcurrentBag[PSObject]]::new()
 
-    # Pre-loop setup: Actions permissions
-    $actions = Invoke-GithubRestMethod -Session $session -Path "orgs/$($Organization.Properties.login)/actions/permissions"
-    $selfHostedRunnerSettings = Invoke-GithubRestMethod -Session $session -Path "orgs/$($Organization.Properties.login)/actions/permissions/self-hosted-runners"
-
+    # Pre-loop setup: Actions permissions — may not be available on all instances
+    $actions = $null
+    $selfHostedRunnerSettings = $null
     $enabledRepos = $null
-    if($actions.enabled_repositories -ne 'all')
+    $selfHostedRunnerEnabledRepos = $null
+
+    try {
+        $actions = Invoke-GithubRestMethod -Session $session -Path "orgs/$($Organization.Properties.login)/actions/permissions" -ErrorMode Stop
+    } catch { Write-Host "[*] Skipped: orgs/actions/permissions (not available on this instance)" }
+    try {
+        $selfHostedRunnerSettings = Invoke-GithubRestMethod -Session $session -Path "orgs/$($Organization.Properties.login)/actions/permissions/self-hosted-runners" -ErrorMode Stop
+    } catch { Write-Host "[*] Skipped: orgs/actions/permissions/self-hosted-runners (not available on this instance)" }
+
+    if($actions -and $actions.enabled_repositories -ne 'all')
     {
         $enabledRepos = (Invoke-GithubRestMethod -Session $Session -Path "orgs/$($Organization.Properties.login)/actions/permissions/repositories").repositories.node_id
     }
 
-    $selfHostedRunnerEnabledRepos = $null
-    if($selfHostedRunnerSettings.enabled_repositories -eq 'selected')
+    if($selfHostedRunnerSettings -and $selfHostedRunnerSettings.enabled_repositories -eq 'selected')
     {
         $selfHostedRunnerEnabledRepos = (Invoke-GithubRestMethod -Session $Session -Path "orgs/$($Organization.Properties.login)/actions/permissions/self-hosted-runners/repositories").repositories.node_id
     }
@@ -7774,7 +7792,15 @@ function Git-HoundSecretScanningAlert
     $nodes = New-Object System.Collections.ArrayList
     $edges = New-Object System.Collections.ArrayList
 
-    foreach($alert in (Invoke-GithubRestMethod -Session $Session -Path "orgs/$($Organization.Properties.login)/secret-scanning/alerts"))
+    # Secret scanning alerts — requires GHAS license on GHES
+    $alertList = @()
+    try {
+        $alertList = @(Invoke-GithubRestMethod -Session $Session -Path "orgs/$($Organization.Properties.login)/secret-scanning/alerts" -ErrorMode Stop)
+    } catch {
+        Write-Host "[*] Skipped: orgs/secret-scanning/alerts (not available on this instance)"
+    }
+
+    foreach($alert in $alertList)
     {
         $alertId = "SSA_$($alert.repository.node_id)_$($alert.number)"
         $properties =[pscustomobject]@{
@@ -8102,7 +8128,13 @@ function Git-HoundPersonalAccessToken
         # Pre-compute all repo node IDs for "all" repository_selection
         $allRepoNodeIds = @($repoNodes | ForEach-Object { $_.properties.node_id })
 
-        $pats = @(Invoke-GithubRestMethod -Session $Session -Path "orgs/$orgLogin/personal-access-tokens")
+        # Fine-grained PAT enumeration — may not be available on all instances
+        $pats = @()
+        try {
+            $pats = @(Invoke-GithubRestMethod -Session $Session -Path "orgs/$orgLogin/personal-access-tokens" -ErrorMode Stop)
+        } catch {
+            Write-Host "[*] Skipped: orgs/personal-access-tokens (not available on this instance)"
+        }
 
         Write-Host "[*] Git-HoundPersonalAccessToken: Found $($pats.Count) fine-grained PATs"
 
@@ -8222,7 +8254,13 @@ function Git-HoundPersonalAccessTokenRequest
     $orgLogin = $Organization.properties.login
     $orgNodeId = $Organization.properties.node_id
 
-    $patRequests = @(Invoke-GithubRestMethod -Session $Session -Path "orgs/$orgLogin/personal-access-token-requests")
+    # PAT request enumeration — may not be available on all instances
+    $patRequests = @()
+    try {
+        $patRequests = @(Invoke-GithubRestMethod -Session $Session -Path "orgs/$orgLogin/personal-access-token-requests" -ErrorMode Stop)
+    } catch {
+        Write-Host "[*] Skipped: orgs/personal-access-token-requests (not available on this instance)"
+    }
 
     Write-Host "[*] Git-HoundPersonalAccessTokenRequest: Found $($patRequests.Count) pending PAT requests"
 
