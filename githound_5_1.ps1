@@ -1,3 +1,42 @@
+# ── PowerShell 5.1 Compatibility ─────────────────────────────────────────────
+# This version has been adapted from the original githound.ps1 (PowerShell 7+)
+# to work with PowerShell 5.1. Key changes:
+#   - SkipCertificateCheck → ServicePointManager callback
+#   - ForEach-Object -Parallel → sequential foreach
+#   - ConcurrentBag → ArrayList
+#   - Null-coalescing (??) → if/else
+#   - Ternary operator → if/else
+#   - ConvertFrom-Json -AsHashtable → property access
+#   - Invoke-WebRequest uses -UseBasicParsing
+
+function Set-GitHoundCertificateBypass {
+    <#
+    .SYNOPSIS
+        Disables SSL certificate validation for PS 5.1 (ServicePointManager-based).
+    #>
+    if (-not ([System.Management.Automation.PSTypeName]'GitHoundCertPolicy').Type) {
+        Add-Type @"
+using System.Net;
+using System.Net.Security;
+using System.Security.Cryptography.X509Certificates;
+public class GitHoundCertPolicy : ICertificatePolicy {
+    public bool CheckValidationResult(
+        ServicePoint srvPoint, X509Certificate certificate,
+        WebRequest request, int certificateProblem) { return true; }
+}
+"@
+    }
+    [System.Net.ServicePointManager]::CertificatePolicy = [GitHoundCertPolicy]::new()
+}
+
+function Restore-GitHoundCertificatePolicy {
+    <#
+    .SYNOPSIS
+        Restores default certificate validation.
+    #>
+    [System.Net.ServicePointManager]::CertificatePolicy = $null
+}
+
 function Get-GitHoundFunctionBundle {
     [OutputType([hashtable])]
     param() 
@@ -140,6 +179,11 @@ function New-GithubSession {
         PrivateKeyPath = $PrivateKeyPath
         HasPersonalAccessToken = ($null -ne $PatHeaders)
         TargetType = if ($EnterpriseName) { 'Enterprise' } elseif ($OrganizationName) { 'Organization' } else { 'Application' }
+    }
+
+    # Apply certificate bypass globally for PS 5.1 if requested
+    if ($SkipCertificateCheck) {
+        Set-GitHoundCertificateBypass
     }
 }
 
@@ -435,13 +479,12 @@ function Invoke-GithubRestMethod {
                         Method      = $Method
                         ErrorAction = 'Stop'
                     }
-                    if ($Session.SkipCertificateCheck) { $iwrParams['SkipCertificateCheck'] = $true }
 
                     if($LinkHeader) {
-                        $Response = Invoke-WebRequest -Uri "$LinkHeader" @iwrParams
+                        $Response = Invoke-WebRequest -UseBasicParsing -Uri "$LinkHeader" @iwrParams
                     } else {
                         Write-Verbose "https://api.github.com/$($Path)"
-                        $Response = Invoke-WebRequest -Uri "$($Session.Uri)$($Path)" @iwrParams
+                        $Response = Invoke-WebRequest -UseBasicParsing -Uri "$($Session.Uri)$($Path)" @iwrParams
                     }
                     $requestSuccessful = $true
                 }
@@ -530,7 +573,6 @@ function Invoke-GitHubGraphQL
         Headers = $Headers
         Body = $Body
     }
-    if ($Session.SkipCertificateCheck) { $fparams['SkipCertificateCheck'] = $true }
 
     $requestSuccessful = $false
     $retryCount = 0
@@ -925,266 +967,6 @@ function Normalize-Null
     
 }
 
-function ConvertTo-HexObjectId
-{
-    param(
-        [Parameter(Mandatory = $true)]
-        [AllowEmptyString()]
-        [string]$ObjectId
-    )
-
-    if ([string]::IsNullOrEmpty($ObjectId))
-    {
-        return $ObjectId
-    }
-
-    $bytes = [System.Text.Encoding]::UTF8.GetBytes($ObjectId)
-    return ($bytes | ForEach-Object { $_.ToString('x2') }) -join ''
-}
-
-function Test-GitHoundNativeObjectId
-{
-    param(
-        [Parameter(Mandatory = $true)]
-        [AllowEmptyString()]
-        [string]$ObjectId
-    )
-
-    if ([string]::IsNullOrEmpty($ObjectId))
-    {
-        return $false
-    }
-
-    if ($ObjectId -match '^[0-9A-F]{32}$')
-    {
-        return $false
-    }
-
-    if ($ObjectId -match '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
-    {
-        return $false
-    }
-
-    if ($ObjectId -match '^00u[a-zA-Z0-9]+$')
-    {
-        return $false
-    }
-
-    if ($ObjectId.StartsWith('GH_') -or $ObjectId.Contains('_all_repo_'))
-    {
-        return $false
-    }
-
-    if ($ObjectId -match '^(E|O|U|R|T|P|EN|EIP|EI|EUA|OIP|AIP|I|S|B|BR|PR|W|WF|WP|IP|PAT|SAR|RA|RR|RG|AL|AT|IC|TS|EM|VS|SR|CS|SS)_[A-Za-z0-9_+-]+$')
-    {
-        return $true
-    }
-
-    try
-    {
-        $padding = (4 - ($ObjectId.Length % 4)) % 4
-        $paddedValue = $ObjectId + ('=' * $padding)
-        $decodedValue = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($paddedValue))
-        if ($decodedValue -match '^\d+:(Organization|User|Repository|Team|Environment|Enterprise|Workflow|WorkflowRun|AppInstallation|SamlIdentityProvider|ExternalIdentity|Secret|Variable|Runner|Branch|PullRequest|Issue|Discussion|Project|ProjectV2|PersonalAccessToken|EnterpriseUserAccount)')
-        {
-            return $true
-        }
-    }
-    catch
-    {
-    }
-
-    return $false
-}
-
-function Get-GitHoundHexObjectIdMap
-{
-    param(
-        [Parameter(Mandatory = $true)]
-        [AllowEmptyCollection()]
-        [object[]]$Nodes
-    )
-
-    $hexObjectIds = @{}
-
-    foreach ($node in $Nodes)
-    {
-        if ($null -eq $node -or [string]::IsNullOrEmpty($node.id))
-        {
-            continue
-        }
-
-        if ((Test-GitHoundNativeObjectId -ObjectId $node.id) -and -not $hexObjectIds.ContainsKey($node.id))
-        {
-            $hexObjectIds[$node.id] = ConvertTo-HexObjectId -ObjectId $node.id
-        }
-    }
-
-    return $hexObjectIds
-}
-
-function Convert-GitHoundOutputWithIdMap
-{
-    param(
-        [Parameter(Mandatory = $true)]
-        [AllowEmptyCollection()]
-        [object[]]$Nodes,
-
-        [Parameter(Mandatory = $true)]
-        [AllowEmptyCollection()]
-        [object[]]$Edges,
-
-        [Parameter(Mandatory = $true)]
-        [hashtable]$IdMap
-    )
-
-    # Temporary workaround for BloodHound uppercasing objectids on ingestion.
-    # Keep this as a final-output transform so it stays easy to remove later.
-    $idPropertyNames = @(
-        'node_id',
-        'objectid',
-        'environmentid',
-        'github_user_id'
-    )
-
-    function Test-GitHoundMember
-    {
-        param(
-            [Parameter(Mandatory = $true)]
-            $Object,
-
-            [Parameter(Mandatory = $true)]
-            [string]$Name
-        )
-
-        if ($null -eq $Object)
-        {
-            return $false
-        }
-
-        if ($Object -is [System.Collections.IDictionary])
-        {
-            return $Object.Contains($Name)
-        }
-
-        return $Object.PSObject.Properties.Name.Contains($Name)
-    }
-
-    foreach ($node in $Nodes)
-    {
-        if ($null -eq $node)
-        {
-            continue
-        }
-
-        if (-not [string]::IsNullOrEmpty($node.id) -and $IdMap.ContainsKey($node.id))
-        {
-            $node.id = $IdMap[$node.id]
-        }
-
-        if (-not $node.properties)
-        {
-            continue
-        }
-
-        foreach ($propertyName in $idPropertyNames)
-        {
-            if (-not $node.properties.PSObject.Properties.Name.Contains($propertyName))
-            {
-                continue
-            }
-
-            $propertyValue = $node.properties.$propertyName
-            if ([string]::IsNullOrEmpty($propertyValue))
-            {
-                continue
-            }
-
-            if ($IdMap.ContainsKey($propertyValue))
-            {
-                $node.properties.$propertyName = $IdMap[$propertyValue]
-            }
-        }
-
-        foreach ($property in $node.properties.PSObject.Properties)
-        {
-            if (-not $property.Name.StartsWith('query_'))
-            {
-                continue
-            }
-
-            if ([string]::IsNullOrEmpty($property.Value))
-            {
-                continue
-            }
-
-            $updatedQuery = [string]$property.Value
-            foreach ($originalId in $IdMap.Keys)
-            {
-                $updatedQuery = $updatedQuery.Replace($originalId, $IdMap[$originalId])
-            }
-            $property.Value = $updatedQuery
-        }
-    }
-
-    foreach ($edge in $Edges)
-    {
-        if ($null -eq $edge)
-        {
-            continue
-        }
-
-        foreach ($endpointName in @('start', 'end'))
-        {
-            $endpoint = $edge.$endpointName
-            if ($null -eq $endpoint)
-            {
-                continue
-            }
-
-            if (
-                (Test-GitHoundMember -Object $endpoint -Name 'value') -and
-                -not [string]::IsNullOrEmpty($endpoint.value) -and
-                $IdMap.ContainsKey($endpoint.value)
-            )
-            {
-                $endpoint.value = $IdMap[$endpoint.value]
-            }
-
-            if (-not (Test-GitHoundMember -Object $endpoint -Name 'property_matchers'))
-            {
-                continue
-            }
-
-            foreach ($matcher in $endpoint.property_matchers)
-            {
-                if ($null -eq $matcher)
-                {
-                    continue
-                }
-
-                $matcherPropertyName = $matcher.property_name
-                $matcherValue = $matcher.value
-
-                if ([string]::IsNullOrEmpty($matcherPropertyName) -or [string]::IsNullOrEmpty($matcherValue))
-                {
-                    continue
-                }
-
-                if ($IdMap.ContainsKey($matcherValue))
-                {
-                    $matcher.value = $IdMap[$matcherValue]
-                }
-            }
-        }
-    }
-
-    return [PSCustomObject]@{
-        Nodes = $Nodes
-        Edges = $Edges
-    }
-}
-
 function Get-GitHoundEnterpriseTeamNodeId
 {
     param(
@@ -1335,28 +1117,6 @@ function Get-GitHoundOktaGroupPropertyMatchers
     )
 }
 
-function Get-GitHoundAzureUserPropertyMatchers
-{
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$ObjectId,
-
-        [Parameter(Mandatory = $false)]
-        [string]$TenantId
-    )
-
-    $matchers = @(
-        (New-BHOGPropertyMatcher -Key 'objectid' -Value $ObjectId)
-    )
-
-    if (-not [string]::IsNullOrWhiteSpace($TenantId))
-    {
-        $matchers += (New-BHOGPropertyMatcher -Key 'tenantid' -Value $TenantId)
-    }
-
-    $matchers
-}
-
 function Resolve-GitHoundScimIdpCorrelations
 {
     [CmdletBinding()]
@@ -1376,29 +1136,21 @@ function Resolve-GitHoundScimIdpCorrelations
     }
 
     $contexts = @($samlProviderNodes | ForEach-Object { Get-GitHoundSamlProviderContext -SamlProviderNode $_ })
-    $supportedContexts = @($contexts | Where-Object { $_.IdpKind -in @('okta', 'azure') })
-    if (-not $supportedContexts) {
+    $oktaContexts = @($contexts | Where-Object { $_.IdpKind -eq 'okta' })
+    if (-not $oktaContexts) {
         return [PSCustomObject]@{ Nodes = @(); Edges = $edges }
     }
 
-    foreach ($context in $supportedContexts) {
+    foreach ($context in $oktaContexts) {
         if ($context.SupportsScimUsers) {
             foreach ($scimUser in @($ScimResult.Nodes | Where-Object { $_.kinds -contains 'SCIM_User' })) {
                 if (($scimUser.properties.enabled -eq $true) -and -not [string]::IsNullOrWhiteSpace($scimUser.properties.externalId)) {
-                    switch ($context.IdpKind) {
-                        'okta' {
-                            $null = $edges.Add((New-GitHoundEdge -Kind 'SCIM_Provisioned' -StartId $scimUser.properties.externalId -StartKind 'Okta_User' -EndId $scimUser.id -Properties @{ traversable = $true }))
-                        }
-                        'azure' {
-                            $azureUserMatchers = Get-GitHoundAzureUserPropertyMatchers -ObjectId $scimUser.properties.externalId -TenantId $context.ForeignEnvironmentId
-                            $null = $edges.Add((New-GitHoundEdge -Kind 'SCIM_Provisioned' -StartKind 'AZUser' -StartPropertyMatchers $azureUserMatchers -EndId $scimUser.id -Properties @{ traversable = $true }))
-                        }
-                    }
+                    $null = $edges.Add((New-GitHoundEdge -Kind 'SCIM_Provisioned' -StartId $scimUser.properties.externalId -StartKind 'Okta_User' -EndId $scimUser.id -Properties @{ traversable = $true }))
                 }
             }
         }
 
-        if ($context.IdpKind -eq 'okta' -and $context.SupportsScimGroups -and -not [string]::IsNullOrWhiteSpace($context.ForeignEnvironmentId)) {
+        if ($context.SupportsScimGroups -and -not [string]::IsNullOrWhiteSpace($context.ForeignEnvironmentId)) {
             foreach ($scimGroup in @($ScimResult.Nodes | Where-Object { $_.kinds -contains 'SCIM_Group' })) {
                 if (-not [string]::IsNullOrWhiteSpace($scimGroup.properties.externalId)) {
                     $oktaGroupMatchers = Get-GitHoundOktaGroupPropertyMatchers -Name $scimGroup.properties.externalId -OktaDomain $context.ForeignEnvironmentId
@@ -2628,10 +2380,10 @@ function Get-GitHoundWorkflowDispatchEdges
 
     $edges = New-Object System.Collections.ArrayList
 
-    $graphNodes = @($GraphData.graph.nodes ?? @())
-    $graphEdges = @($GraphData.graph.edges ?? @())
-    $workflowNodes = @($WorkflowData.Nodes ?? @())
-    $workflowEdges = @($WorkflowData.Edges ?? @())
+    $graphNodes = @($(if ($GraphData.graph.nodes -ne $null) { $GraphData.graph.nodes } else { @() }))
+    $graphEdges = @($(if ($GraphData.graph.edges -ne $null) { $GraphData.graph.edges } else { @() }))
+    $workflowNodes = @($(if ($WorkflowData.Nodes -ne $null) { $WorkflowData.Nodes } else { @() }))
+    $workflowEdges = @($(if ($WorkflowData.Edges -ne $null) { $WorkflowData.Edges } else { @() }))
 
     $jobNodes = @($workflowNodes | Where-Object { $_.kinds -contains 'GH_WorkflowJob' })
     $jobEdges = @($workflowEdges | Where-Object { $_.kind -eq 'GH_HasJob' })
@@ -2728,10 +2480,10 @@ function Test-PwnRequestable
         if ($step.properties.action_slug -ne 'actions/checkout') { continue }
         if (-not $step.properties.with_args) { continue }
 
-        $withArgs = try { $step.properties.with_args | ConvertFrom-Json -AsHashtable -ErrorAction SilentlyContinue } catch { $null }
-        if (-not $withArgs -or -not $withArgs['ref']) { continue }
+        $withArgs = try { $step.properties.with_args | ConvertFrom-Json -ErrorAction SilentlyContinue } catch { $null }
+        if (-not $withArgs -or -not $withArgs.ref) { continue }
 
-        $refVal = "$($withArgs['ref'])"
+        $refVal = "$($withArgs.ref)"
         foreach ($pattern in $pwnRefPatterns) {
             if ($refVal -like "*$pattern*") { return $true }
         }
@@ -2893,7 +2645,7 @@ function Expand-GitHoundWorkflowGraph
                 job_key          = $jobKey
                 runs_on          = Normalize-Null $runsOn
                 is_self_hosted   = $isSelfHosted
-                container        = Normalize-Null ($job['container'] -is [string] ? $job['container'] : ($job['container'] | ConvertTo-Json -Compress -ErrorAction SilentlyContinue))
+                container        = Normalize-Null $(if ($job['container'] -is [string]) { $job['container'] } else { ($job['container'] | ConvertTo-Json -Compress -ErrorAction SilentlyContinue) })
                 environment      = Normalize-Null $jobEnvironment
                 permissions      = Normalize-Null $jobPermissions
                 uses_reusable    = Normalize-Null $usesReusable
@@ -4232,9 +3984,9 @@ function Git-HoundRepository
         $Organization
     )
 
-    # ConcurrentBag is thread-safe for parallel ForEach-Object blocks
-    $nodes = [System.Collections.Concurrent.ConcurrentBag[PSObject]]::new()
-    $edges = [System.Collections.Concurrent.ConcurrentBag[PSObject]]::new()
+    # ArrayList for sequential ForEach-Object (PS 5.1 compatible)
+    $nodes = New-Object System.Collections.ArrayList
+    $edges = New-Object System.Collections.ArrayList
 
     # Pre-loop setup: Actions permissions — may not be available on all instances
     $actions = $null
@@ -4269,28 +4021,7 @@ function Git-HoundRepository
     $orgAllRepoAdminId = "$($Organization.id)_all_repo_admin"
 
     # Per-repo processing: create repo node, role nodes, and fetch collaborator/team assignments
-    Invoke-GithubRestMethod -Session $Session -Path "orgs/$($Organization.Properties.login)/repos" | ForEach-Object -Parallel {
-
-        $nodes = $using:nodes
-        $edges = $using:edges
-        $Session = $using:Session
-        $Organization = $using:Organization
-        $actions = $using:actions
-        $selfHostedRunnerSettings = $using:selfHostedRunnerSettings
-        $enabledRepos = $using:enabledRepos
-        $selfHostedRunnerEnabledRepos = $using:selfHostedRunnerEnabledRepos
-        $customRepoRoles = $using:customRepoRoles
-        $orgAllRepoReadId = $using:orgAllRepoReadId
-        $orgAllRepoTriageId = $using:orgAllRepoTriageId
-        $orgAllRepoWriteId = $using:orgAllRepoWriteId
-        $orgAllRepoMaintainId = $using:orgAllRepoMaintainId
-        $orgAllRepoAdminId = $using:orgAllRepoAdminId
-
-        $functionBundle = $using:GitHoundFunctionBundle
-        foreach($funcName in $functionBundle.Keys) {
-            Set-Item -Path "function:$funcName" -Value ([scriptblock]::Create($functionBundle[$funcName]))
-        }
-        $repo = $_
+    foreach ($repo in (Invoke-GithubRestMethod -Session $Session -Path "orgs/$($Organization.Properties.login)/repos")) {
 
         # --- Repository Node ---
         if($actions.enabled_repositories -eq 'all')
@@ -4734,7 +4465,7 @@ function Git-HoundRepository
             }
         }
 
-    } -ThrottleLimit 25
+    }
 
     $output = [PSCustomObject]@{
         Nodes = $nodes
@@ -4885,17 +4616,10 @@ function Git-HoundRepositoryRole
             Write-Host "[*] Processing repos $currentIndex..$chunkEnd of $totalRepos ($thisChunkSize repos, ~$($thisChunkSize * $callsPerRepo) API calls, $remaining calls remaining)"
 
             $chunkRepos = $repoNodes[$currentIndex..$chunkEnd]
-            # ConcurrentBag is thread-safe for parallel ForEach-Object blocks
-            $chunkEdges = [System.Collections.Concurrent.ConcurrentBag[PSObject]]::new()
+            # ArrayList for sequential ForEach-Object (PS 5.1 compatible)
+            $chunkEdges = New-Object System.Collections.ArrayList
 
-            $chunkRepos | ForEach-Object -Parallel {
-                $edges = $using:chunkEdges
-                $Session = $using:Session
-                $functionBundle = $using:GitHoundFunctionBundle
-                foreach($funcName in $functionBundle.Keys) {
-                    Set-Item -Path "function:$funcName" -Value ([scriptblock]::Create($functionBundle[$funcName]))
-                }
-                $repo = $_
+            foreach ($repo in $chunkRepos) {
 
                 # Compute deterministic role IDs from repo node_id
                 $repoReadId     = "$($repo.properties.node_id)_read"
@@ -4916,7 +4640,7 @@ function Git-HoundRepositoryRole
                         'read'     { $repoRoleId = $repoReadId }
                         default    { $repoRoleId = "$($repo.properties.node_id)_$($collaborator.role_name)" }
                     }
-                    $null = $edges.Add((New-GitHoundEdge -Kind 'GH_HasRole' -StartId $collaborator.node_id -EndId $repoRoleId -Properties @{traversable=$true}))
+                    $null = $chunkEdges.Add((New-GitHoundEdge -Kind 'GH_HasRole' -StartId $collaborator.node_id -EndId $repoRoleId -Properties @{traversable=$true}))
                 }
 
                 # --- Role Assignments: Teams ---
@@ -4934,14 +4658,14 @@ function Git-HoundRepositoryRole
                     $teamMatchers = Get-GitHoundOrganizationTeamPropertyMatchers -OrganizationId $repo.properties.environmentid -TeamSlug $team.slug
                     if($teamMatchers)
                     {
-                        $null = $edges.Add((New-GitHoundEdge -Kind 'GH_HasRole' -StartKind 'GH_Team' -StartPropertyMatchers $teamMatchers -EndId $repoRoleId -Properties @{traversable=$true}))
+                        $null = $chunkEdges.Add((New-GitHoundEdge -Kind 'GH_HasRole' -StartKind 'GH_Team' -StartPropertyMatchers $teamMatchers -EndId $repoRoleId -Properties @{traversable=$true}))
                     }
                     else
                     {
-                        $null = $edges.Add((New-GitHoundEdge -Kind 'GH_HasRole' -StartId $team.node_id -EndId $repoRoleId -Properties @{traversable=$true}))
+                        $null = $chunkEdges.Add((New-GitHoundEdge -Kind 'GH_HasRole' -StartId $team.node_id -EndId $repoRoleId -Properties @{traversable=$true}))
                     }
                 }
-            } -ThrottleLimit 25
+            }
 
             # Accumulate chunk results
             if ($chunkEdges.Count -gt 0) {
@@ -6681,20 +6405,11 @@ function Git-HoundWorkflow
             Write-Host "[*] Processing repos $currentIndex..$chunkEnd of $totalRepos ($thisChunkSize repos, ~$($thisChunkSize * $callsPerRepo) API calls, $remaining calls remaining)"
 
             $chunkRepos = $repoNodes[$currentIndex..$chunkEnd]
-            # ConcurrentBag is thread-safe for parallel ForEach-Object blocks
-            $chunkNodes = [System.Collections.Concurrent.ConcurrentBag[PSObject]]::new()
-            $chunkEdges = [System.Collections.Concurrent.ConcurrentBag[PSObject]]::new()
+            # ArrayList for sequential ForEach-Object (PS 5.1 compatible)
+            $chunkNodes = New-Object System.Collections.ArrayList
+            $chunkEdges = New-Object System.Collections.ArrayList
 
-            $chunkRepos | ForEach-Object -Parallel {
-                $nodes = $using:chunkNodes
-                $edges = $using:chunkEdges
-                $Session = $using:Session
-                $allBranches = $using:WorkflowsAllBranches
-                $functionBundle = $using:GitHoundFunctionBundle
-                foreach($funcName in $functionBundle.Keys) {
-                    Set-Item -Path "function:$funcName" -Value ([scriptblock]::Create($functionBundle[$funcName]))
-                }
-                $repo = $_
+            foreach ($repo in $chunkRepos) {
 
                 foreach($workflow in (Invoke-GithubRestMethod -Session $Session -Path "repos/$($repo.properties.full_name)/actions/workflows").workflows)
                 {
@@ -6713,7 +6428,7 @@ function Git-HoundWorkflow
                                 $workflowBranch = $repo.properties.default_branch
                             }
                         } catch {
-                            if ($allBranches) {
+                            if ($WorkflowsAllBranches) {
                                 # Workflow not on default branch — try other branches
                                 try {
                                     $branches = Invoke-GithubRestMethod -Session $Session -Path "repos/$($repo.properties.full_name)/branches" -ErrorAction Stop
@@ -6766,10 +6481,10 @@ function Git-HoundWorkflow
                         query_editors     = "MATCH p=(role:GH_Role)-[:GH_HasRole|GH_HasBaseRole|GH_MemberOf|GH_WriteRepoContents|GH_WriteRepoPullRequests*1..]->(r:GH_Repository)-[:GH_HasWorkflow]->(:GH_Workflow {node_id:'$($workflow.node_id)'}) MATCH p1=(role)<-[:GH_HasRole]-(:GH_User) RETURN p,p1"
                     }
 
-                    $null = $nodes.Add((New-GitHoundNode -Id $workflow.node_id -Kind GH_Workflow -Properties $props))
-                    $null = $edges.Add((New-GitHoundEdge -Kind GH_HasWorkflow -StartId $repo.properties.node_id -EndId $workflow.node_id -Properties @{ traversable = $false }))
+                    $null = $chunkNodes.Add((New-GitHoundNode -Id $workflow.node_id -Kind GH_Workflow -Properties $props))
+                    $null = $chunkEdges.Add((New-GitHoundEdge -Kind GH_HasWorkflow -StartId $repo.properties.node_id -EndId $workflow.node_id -Properties @{ traversable = $false }))
                 }
-            } -ThrottleLimit 25
+            }
 
             # Accumulate chunk results
             if ($chunkNodes.Count -gt 0) {
@@ -7141,22 +6856,14 @@ function Git-HoundEnvironment
     
     begin
     {
-        # ConcurrentBag is thread-safe for parallel ForEach-Object blocks
-        $nodes = [System.Collections.Concurrent.ConcurrentBag[PSObject]]::new()
-        $edges = [System.Collections.Concurrent.ConcurrentBag[PSObject]]::new()
+        # ArrayList for sequential ForEach-Object (PS 5.1 compatible)
+        $nodes = New-Object System.Collections.ArrayList
+        $edges = New-Object System.Collections.ArrayList
     }
 
     process
     {
-        $Repository.nodes | Where-Object {$_.kinds -eq 'GH_Repository'} | ForEach-Object -Parallel {
-            $nodes = $using:nodes
-            $edges = $using:edges
-            $Session = $using:Session
-            $functionBundle = $using:GitHoundFunctionBundle
-            foreach($funcName in $functionBundle.Keys) {
-                Set-Item -Path "function:$funcName" -Value ([scriptblock]::Create($functionBundle[$funcName]))
-            }
-            $repo = $_
+        foreach ($repo in ($Repository.nodes | Where-Object {$_.kinds -eq 'GH_Repository'})) {
 
             Write-Verbose "Fetching environments for $($repo.properties.full_name)"
             # List environments
@@ -7268,7 +6975,7 @@ function Git-HoundEnvironment
                     $null = $edges.Add((New-GitHoundEdge -Kind 'GH_Contains' -StartId $environment.node_id -EndId $variableId -Properties @{ traversable = $false }))
                 }
             }
-        } -ThrottleLimit 25
+        }
     }
 
     end
@@ -7658,21 +7365,12 @@ function Git-HoundSecret
             Write-Host "[*] Processing repos $currentIndex..$chunkEnd of $totalRepos ($thisChunkSize repos, ~$($thisChunkSize * $callsPerRepo) API calls, $remaining calls remaining)"
 
             $chunkRepos = $repoNodes[$currentIndex..$chunkEnd]
-            # ConcurrentBag is thread-safe for parallel ForEach-Object blocks
-            $chunkNodes = [System.Collections.Concurrent.ConcurrentBag[PSObject]]::new()
-            $chunkEdges = [System.Collections.Concurrent.ConcurrentBag[PSObject]]::new()
+            # ArrayList for sequential ForEach-Object (PS 5.1 compatible)
+            $chunkNodes = New-Object System.Collections.ArrayList
+            $chunkEdges = New-Object System.Collections.ArrayList
             $orgName = $Session.OrganizationName
 
-            $chunkRepos | ForEach-Object -Parallel {
-                $nodes = $using:chunkNodes
-                $edges = $using:chunkEdges
-                $Session = $using:Session
-                $orgName = $using:orgName
-                $functionBundle = $using:GitHoundFunctionBundle
-                foreach($funcName in $functionBundle.Keys) {
-                    Set-Item -Path "function:$funcName" -Value ([scriptblock]::Create($functionBundle[$funcName]))
-                }
-                $repo = $_
+            foreach ($repo in $chunkRepos) {
 
                 # List repository secrets
                 # https://docs.github.com/en/rest/actions/secrets?apiVersion=2022-11-28#list-repository-secrets
@@ -7708,11 +7406,11 @@ function Git-HoundSecret
                         # There could be a query for users that can overwrite workflows to use this secret
                     }
 
-                    $null = $nodes.Add((New-GitHoundNode -Id $secretId -Kind 'GH_RepoSecret', 'GH_Secret' -Properties $properties))
-                    $null = $edges.Add((New-GitHoundEdge -Kind 'GH_Contains' -StartId $repo.properties.node_id -EndId $secretId -Properties @{ traversable = $false }))
-                    $null = $edges.Add((New-GitHoundEdge -Kind 'GH_HasSecret' -StartId $repo.properties.node_id -EndId $secretId -Properties @{ traversable = $true }))
+                    $null = $chunkNodes.Add((New-GitHoundNode -Id $secretId -Kind 'GH_RepoSecret', 'GH_Secret' -Properties $properties))
+                    $null = $chunkEdges.Add((New-GitHoundEdge -Kind 'GH_Contains' -StartId $repo.properties.node_id -EndId $secretId -Properties @{ traversable = $false }))
+                    $null = $chunkEdges.Add((New-GitHoundEdge -Kind 'GH_HasSecret' -StartId $repo.properties.node_id -EndId $secretId -Properties @{ traversable = $true }))
                 }
-            } -ThrottleLimit 25
+            }
 
             # Accumulate chunk results
             if ($chunkNodes.Count -gt 0) {
@@ -7911,21 +7609,12 @@ function Git-HoundVariable
             Write-Host "[*] Processing repos $currentIndex..$chunkEnd of $totalRepos ($thisChunkSize repos, ~$($thisChunkSize * $callsPerRepo) API calls, $remaining calls remaining)"
 
             $chunkRepos = $repoNodes[$currentIndex..$chunkEnd]
-            # ConcurrentBag is thread-safe for parallel ForEach-Object blocks
-            $chunkNodes = [System.Collections.Concurrent.ConcurrentBag[PSObject]]::new()
-            $chunkEdges = [System.Collections.Concurrent.ConcurrentBag[PSObject]]::new()
+            # ArrayList for sequential ForEach-Object (PS 5.1 compatible)
+            $chunkNodes = New-Object System.Collections.ArrayList
+            $chunkEdges = New-Object System.Collections.ArrayList
             $orgName = $Session.OrganizationName
 
-            $chunkRepos | ForEach-Object -Parallel {
-                $nodes = $using:chunkNodes
-                $edges = $using:chunkEdges
-                $Session = $using:Session
-                $orgName = $using:orgName
-                $functionBundle = $using:GitHoundFunctionBundle
-                foreach($funcName in $functionBundle.Keys) {
-                    Set-Item -Path "function:$funcName" -Value ([scriptblock]::Create($functionBundle[$funcName]))
-                }
-                $repo = $_
+            foreach ($repo in $chunkRepos) {
 
                 # List repository variables
                 # https://docs.github.com/en/rest/actions/variables?apiVersion=2022-11-28#list-repository-variables
@@ -7959,11 +7648,11 @@ function Git-HoundVariable
                         query_visible_repositories = "MATCH p=(:GH_RepoVariable {node_id:'$variableId'})<-[:GH_HasVariable]-(:GH_Repository) RETURN p"
                     }
 
-                    $null = $nodes.Add((New-GitHoundNode -Id $variableId -Kind 'GH_RepoVariable', 'GH_Variable' -Properties $properties))
-                    $null = $edges.Add((New-GitHoundEdge -Kind 'GH_Contains' -StartId $repo.properties.node_id -EndId $variableId -Properties @{ traversable = $false }))
-                    $null = $edges.Add((New-GitHoundEdge -Kind 'GH_HasVariable' -StartId $repo.properties.node_id -EndId $variableId -Properties @{ traversable = $true }))
+                    $null = $chunkNodes.Add((New-GitHoundNode -Id $variableId -Kind 'GH_RepoVariable', 'GH_Variable' -Properties $properties))
+                    $null = $chunkEdges.Add((New-GitHoundEdge -Kind 'GH_Contains' -StartId $repo.properties.node_id -EndId $variableId -Properties @{ traversable = $false }))
+                    $null = $chunkEdges.Add((New-GitHoundEdge -Kind 'GH_HasVariable' -StartId $repo.properties.node_id -EndId $variableId -Properties @{ traversable = $true }))
                 }
-            } -ThrottleLimit 25
+            }
 
             # Accumulate chunk results
             if ($chunkNodes.Count -gt 0) {
@@ -9734,6 +9423,67 @@ function Invoke-GitHound
         Write-Host "[*] Skipping Personal Access Token Requests (use -CollectAll to include)"
     }
 
+    # ── Final Consolidation ───────────────────────────────────────────────
+    Write-Host "[*] Consolidating to OpenGraph JSON Payload"
+    # Filter out any null entries that may have been introduced by thread-safety issues or API errors
+    $filteredNodes = @($nodes | Where-Object { $_ -ne $null })
+    $filteredEdges = @($edges | Where-Object { $_ -ne $null })
+    $nullNodes = $nodes.Count - $filteredNodes.Count
+    $nullEdges = $edges.Count - $filteredEdges.Count
+    if ($nullNodes -gt 0 -or $nullEdges -gt 0) {
+        Write-Warning "Filtered out $nullNodes null node(s) and $nullEdges null edge(s) from payload"
+    }
+    $consolidatedFile = Join-Path $CheckpointPath "githound_$orgId.json"
+    $payload = [PSCustomObject]@{
+        '$schema' = "https://raw.githubusercontent.com/MichaelGrafnetter/EntraAuthPolicyHound/refs/heads/main/bloodhound-opengraph.schema.json"
+        metadata = [PSCustomObject]@{
+            source_kind = "GitHub"
+        }
+        graph = [PSCustomObject]@{
+            nodes = $filteredNodes
+            edges = $filteredEdges
+        }
+    } | ConvertTo-Json -Depth 10 | Out-File -FilePath $consolidatedFile
+    Write-Host "[+] Consolidated payload: $consolidatedFile ($($filteredNodes.Count) nodes, $($filteredEdges.Count) edges)"
+
+    # ── Cleanup Intermediates ─────────────────────────────────────────────
+    if ($CleanupIntermediates) {
+        $stepFileNames = @(
+            "githound_Organization_$orgId.json",
+            "githound_User_$orgId.json",
+            "githound_Team_$orgId.json",
+            "githound_Repository_$orgId.json",
+            "githound_RepoRole_$orgId.json",
+            "githound_Branch_$orgId.json",
+            "githound_Workflow_$orgId.json",
+            "githound_WorkflowAnalysis_$orgId.json",
+            "githound_Environment_$orgId.json",
+            "githound_OrgSecret_$orgId.json",
+            "githound_Secret_$orgId.json",
+            "githound_SecretAlerts_$orgId.json",
+            "githound_AppInstallation_$orgId.json",
+            "githound_PersonalAccessToken_$orgId.json",
+            "githound_PersonalAccessTokenRequest_$orgId.json"
+        )
+        $completeFilePatterns = @(
+            "githound_RepoRole_complete.json",
+            "githound_Branch_complete.json",
+            "githound_Workflow_complete.json",
+            "githound_Secret_complete.json"
+        )
+        $cleanedCount = 0
+        foreach ($fileName in ($stepFileNames + $completeFilePatterns)) {
+            $filePath = Join-Path $CheckpointPath $fileName
+            if (Test-Path $filePath) {
+                Remove-Item $filePath -Force
+                $cleanedCount++
+            }
+        }
+        if ($cleanedCount -gt 0) {
+            Write-Host "[+] Cleaned up $cleanedCount intermediate file(s)."
+        }
+    }
+
     # ── SAML (separate output, not included in consolidated payload) ──────
     if (-not $IsGHES) {
     Write-Host "[*] Enumerating SAML Identity Provider"
@@ -9743,8 +9493,13 @@ function Invoke-GitHound
     if($saml.nodes) { $samlNodes.AddRange(@($saml.nodes)) }
     if($saml.edges) { $samlEdges.AddRange(@($saml.edges)) }
 
-    $filteredScimNodes = @()
-    $filteredScimEdges = @()
+    $payload = [PSCustomObject]@{
+        '$schema' = "https://raw.githubusercontent.com/MichaelGrafnetter/EntraAuthPolicyHound/refs/heads/main/bloodhound-opengraph.schema.json"
+        graph = [PSCustomObject]@{
+            nodes = @($samlNodes | Where-Object { $_ -ne $null })
+            edges = @($samlEdges | Where-Object { $_ -ne $null })
+        }
+    } | ConvertTo-Json -Depth 10 | Out-File -FilePath (Join-Path $CheckpointPath "githound_saml_$orgId.json")
 
     # ── SCIM (separate output, not included in consolidated payload) ──────
     if ($CollectAll) {
@@ -9757,14 +9512,20 @@ function Invoke-GitHound
 
         $scimCorrelations = Resolve-GitHoundScimIdpCorrelations -ScimResult $scim -SamlResult $saml
         if($scimCorrelations.Edges) { $scimEdges.AddRange(@($scimCorrelations.Edges)) }
-        $filteredScimNodes = @($scimNodes | Where-Object { $_ -ne $null })
-        $filteredScimEdges = @($scimEdges | Where-Object { $_ -ne $null })
+
+        $payload = [PSCustomObject]@{
+            '$schema' = "https://raw.githubusercontent.com/MichaelGrafnetter/EntraAuthPolicyHound/refs/heads/main/bloodhound-opengraph.schema.json"
+            graph = [PSCustomObject]@{
+                nodes = @($scimNodes | Where-Object { $_ -ne $null })
+                edges = @($scimEdges | Where-Object { $_ -ne $null })
+            }
+        } | ConvertTo-Json -Depth 10 | Out-File -FilePath (Join-Path $CheckpointPath "githound_scim_$orgId.json")
+        Write-Host "[+] SCIM payload: githound_scim_$orgId.json ($($scimNodes.Count) nodes, $($scimEdges.Count) edges)"
     } else {
         Write-Host "[*] Skipping SCIM Users (use -CollectAll to include)"
     }
 
     # ── OIDC (separate output, not included in consolidated payload) ──────
-    $filteredOidcEdges = @()
     $fidcJsonPath = Join-Path $CheckpointPath "azurehound_federatedidentitycredentials.json"
     if(Test-Path $fidcJsonPath)
     {
@@ -9776,7 +9537,13 @@ function Invoke-GitHound
             $oidc = Parse-GitHoundOIDCSubject -FederatedIdentityCredentials $fidcNodes
             if($oidc.edges.Count -gt 0)
             {
-                $filteredOidcEdges = @($oidc.Edges | Where-Object { $_ -ne $null })
+                $payload = [PSCustomObject]@{
+                    '$schema' = "https://raw.githubusercontent.com/MichaelGrafnetter/EntraAuthPolicyHound/refs/heads/main/bloodhound-opengraph.schema.json"
+                    graph = [PSCustomObject]@{
+                        nodes = @()
+                        edges = @($oidc.Edges | Where-Object { $_ -ne $null })
+                    }
+                } | ConvertTo-Json -Depth 10 | Out-File -FilePath (Join-Path $CheckpointPath "githound_oidc_$orgId.json")
             }
         }
     }
@@ -9787,127 +9554,6 @@ function Invoke-GitHound
     }
     } else {
         Write-Host "[*] Skipping SAML/SCIM/OIDC (not applicable in GHES mode — LDAP identity handled at server level)"
-    }
-
-    # ── Final Export Layer (shared GitHub object-id map) ─────────────────
-    Write-Host "[*] Consolidating to OpenGraph JSON Payload"
-    $filteredNodes = @($nodes | Where-Object { $_ -ne $null })
-    $filteredEdges = @($edges | Where-Object { $_ -ne $null })
-    $nullNodes = $nodes.Count - $filteredNodes.Count
-    $nullEdges = $edges.Count - $filteredEdges.Count
-    if ($nullNodes -gt 0 -or $nullEdges -gt 0) {
-        Write-Warning "Filtered out $nullNodes null node(s) and $nullEdges null edge(s) from payload"
-    }
-
-    $filteredSamlNodes = @($samlNodes | Where-Object { $_ -ne $null })
-    $filteredSamlEdges = @($samlEdges | Where-Object { $_ -ne $null })
-    $orgOutputIdMap = Get-GitHoundHexObjectIdMap -Nodes @($filteredNodes + $filteredSamlNodes + $filteredScimNodes)
-
-    $consolidatedFile = Join-Path $CheckpointPath "githound_$orgId.json"
-    $hexPayload = Convert-GitHoundOutputWithIdMap -Nodes $filteredNodes -Edges $filteredEdges -IdMap $orgOutputIdMap
-    [PSCustomObject]@{
-        '$schema' = "https://raw.githubusercontent.com/MichaelGrafnetter/EntraAuthPolicyHound/refs/heads/main/bloodhound-opengraph.schema.json"
-        metadata = [PSCustomObject]@{
-            source_kind = "GitHub"
-        }
-        graph = [PSCustomObject]@{
-            nodes = $hexPayload.Nodes
-            edges = $hexPayload.Edges
-        }
-    } | ConvertTo-Json -Depth 10 | Out-File -FilePath $consolidatedFile
-    Write-Host "[+] Consolidated payload: $consolidatedFile ($($filteredNodes.Count) nodes, $($filteredEdges.Count) edges)"
-
-    $orgSamlFilePath = Join-Path $CheckpointPath "githound_saml_$orgId.json"
-    if ($filteredSamlNodes.Count -gt 0 -or $filteredSamlEdges.Count -gt 0) {
-        $hexSamlPayload = Convert-GitHoundOutputWithIdMap -Nodes $filteredSamlNodes -Edges $filteredSamlEdges -IdMap $orgOutputIdMap
-        [PSCustomObject]@{
-            '$schema' = "https://raw.githubusercontent.com/MichaelGrafnetter/EntraAuthPolicyHound/refs/heads/main/bloodhound-opengraph.schema.json"
-            graph = [PSCustomObject]@{
-                nodes = $hexSamlPayload.Nodes
-                edges = $hexSamlPayload.Edges
-            }
-        } | ConvertTo-Json -Depth 10 | Out-File -FilePath $orgSamlFilePath
-    } elseif (Test-Path $orgSamlFilePath) {
-        Remove-Item $orgSamlFilePath -Force
-    }
-
-    if ($CollectAll) {
-        $orgScimFilePath = Join-Path $CheckpointPath "githound_scim_$orgId.json"
-        if ($filteredScimNodes.Count -gt 0 -or $filteredScimEdges.Count -gt 0) {
-            $hexScimPayload = Convert-GitHoundOutputWithIdMap -Nodes $filteredScimNodes -Edges $filteredScimEdges -IdMap $orgOutputIdMap
-            [PSCustomObject]@{
-                '$schema' = "https://raw.githubusercontent.com/MichaelGrafnetter/EntraAuthPolicyHound/refs/heads/main/bloodhound-opengraph.schema.json"
-                graph = [PSCustomObject]@{
-                    nodes = $hexScimPayload.Nodes
-                    edges = $hexScimPayload.Edges
-                }
-            } | ConvertTo-Json -Depth 10 | Out-File -FilePath $orgScimFilePath
-            Write-Host "[+] SCIM payload: githound_scim_$orgId.json ($($filteredScimNodes.Count) nodes, $($filteredScimEdges.Count) edges)"
-        } elseif (Test-Path $orgScimFilePath) {
-            Remove-Item $orgScimFilePath -Force
-        }
-    }
-
-    if ($filteredOidcEdges.Count -gt 0) {
-        $hexOidcPayload = Convert-GitHoundOutputWithIdMap -Nodes @() -Edges $filteredOidcEdges -IdMap $orgOutputIdMap
-        [PSCustomObject]@{
-            '$schema' = "https://raw.githubusercontent.com/MichaelGrafnetter/EntraAuthPolicyHound/refs/heads/main/bloodhound-opengraph.schema.json"
-            graph = [PSCustomObject]@{
-                nodes = @()
-                edges = $hexOidcPayload.Edges
-            }
-        } | ConvertTo-Json -Depth 10 | Out-File -FilePath (Join-Path $CheckpointPath "githound_oidc_$orgId.json")
-    }
-
-    # ── Cleanup Intermediates ─────────────────────────────────────────────
-    if ($CleanupIntermediates) {
-        $stepFileNames = @(
-            "githound_Organization_$orgId.json",
-            "githound_User_$orgId.json",
-            "githound_Team_$orgId.json",
-            "githound_Repository_$orgId.json",
-            "githound_RepoRole_$orgId.json",
-            "githound_Branch_$orgId.json",
-            "githound_Workflow_$orgId.json",
-            "githound_Runner_$orgId.json",
-            "githound_WorkflowAnalysis_$orgId.json",
-            "githound_Environment_$orgId.json",
-            "githound_OrgSecret_$orgId.json",
-            "githound_Secret_$orgId.json",
-            "githound_SecretAlerts_$orgId.json",
-            "githound_AppInstallation_$orgId.json",
-            "githound_Variable_$orgId.json",
-            "githound_PersonalAccessToken_$orgId.json",
-            "githound_PersonalAccessTokenRequest_$orgId.json"
-        )
-        $completeFilePatterns = @(
-            "githound_RepoRole_complete.json",
-            "githound_Branch_complete.json",
-            "githound_Workflow_complete.json",
-            "githound_Secret_complete.json",
-            "githound_Variable_complete.json"
-        )
-        $wildcardPatterns = @(
-            "githound_Variable_chunk_*.json"
-        )
-        $cleanedCount = 0
-        foreach ($fileName in ($stepFileNames + $completeFilePatterns)) {
-            $filePath = Join-Path $CheckpointPath $fileName
-            if (Test-Path $filePath) {
-                Remove-Item $filePath -Force
-                $cleanedCount++
-            }
-        }
-        foreach ($pattern in $wildcardPatterns) {
-            $matchingFiles = @(Get-ChildItem -Path $CheckpointPath -Filter $pattern -ErrorAction SilentlyContinue)
-            foreach ($matchingFile in $matchingFiles) {
-                Remove-Item $matchingFile.FullName -Force
-                $cleanedCount++
-            }
-        }
-        if ($cleanedCount -gt 0) {
-            Write-Host "[+] Cleaned up $cleanedCount intermediate file(s)."
-        }
     }
 
     Write-Host "[+] GitHound collection complete for $($Session.OrganizationName)."
@@ -10141,8 +9787,15 @@ function Invoke-GitHoundEnterprise
             Write-Host "[+] Saved: githound_EnterpriseSaml_$entId.json"
         }
 
-        $filteredEnterpriseSamlNodes = @($enterpriseSaml.Nodes | Where-Object { $_ -ne $null })
-        $filteredEnterpriseSamlEdges = @($enterpriseSaml.Edges | Where-Object { $_ -ne $null })
+        $enterpriseSamlPayload = [PSCustomObject]@{
+            '$schema' = "https://raw.githubusercontent.com/MichaelGrafnetter/EntraAuthPolicyHound/refs/heads/main/bloodhound-opengraph.schema.json"
+            graph = [PSCustomObject]@{
+                nodes = @($enterpriseSaml.Nodes | Where-Object { $_ -ne $null })
+                edges = @($enterpriseSaml.Edges | Where-Object { $_ -ne $null })
+            }
+        }
+        $enterpriseSamlPayload | ConvertTo-Json -Depth 10 | Out-File -FilePath (Join-Path $CheckpointPath "githound_saml_$entId.json")
+
         $scimNodes = @(@($enterpriseScimUsers.Nodes) + @($enterpriseScimGroups.Nodes) | Where-Object { $_ -ne $null })
         $scimEdges = @(@($enterpriseScimUsers.Edges) + @($enterpriseScimGroups.Edges) | Where-Object { $_ -ne $null })
         $scimRaw = [PSCustomObject]@{
@@ -10153,59 +9806,31 @@ function Invoke-GitHoundEnterprise
         if($scimCorrelations.Edges) {
             $scimEdges = @(@($scimEdges) + @($scimCorrelations.Edges) | Where-Object { $_ -ne $null })
         }
+        $scimPayload = [PSCustomObject]@{
+            '$schema' = "https://raw.githubusercontent.com/MichaelGrafnetter/EntraAuthPolicyHound/refs/heads/main/bloodhound-opengraph.schema.json"
+            graph = [PSCustomObject]@{
+                nodes = $scimNodes
+                edges = $scimEdges
+            }
+        }
+        $scimPayload | ConvertTo-Json -Depth 10 | Out-File -FilePath (Join-Path $CheckpointPath "githound_scim_$entId.json")
+        Write-Host "[+] SCIM payload: githound_scim_$entId.json ($($scimNodes.Count) nodes, $($scimEdges.Count) edges)"
     } else {
-        $filteredEnterpriseSamlNodes = @()
-        $filteredEnterpriseSamlEdges = @()
-        $scimNodes = @()
-        $scimEdges = @()
+        Write-Host "[*] Skipping Enterprise SAML (session does not contain a PAT)"
     }
 
     # ── Enterprise Consolidation ─────────────────────────────────────────
     $filteredNodes = @($nodes | Where-Object { $_ -ne $null })
     $filteredEdges = @($edges | Where-Object { $_ -ne $null })
-    $enterpriseOutputIdMap = Get-GitHoundHexObjectIdMap -Nodes @($filteredNodes + $filteredEnterpriseSamlNodes + $scimNodes)
 
-    if ($Session.HasPersonalAccessToken) {
-        $enterpriseSamlFilePath = Join-Path $CheckpointPath "githound_saml_$entId.json"
-        $hexEnterpriseSamlPayload = Convert-GitHoundOutputWithIdMap -Nodes $filteredEnterpriseSamlNodes -Edges $filteredEnterpriseSamlEdges -IdMap $enterpriseOutputIdMap
-        if ($filteredEnterpriseSamlNodes.Count -gt 0 -or $filteredEnterpriseSamlEdges.Count -gt 0) {
-            $enterpriseSamlPayload = [PSCustomObject]@{
-                '$schema' = "https://raw.githubusercontent.com/MichaelGrafnetter/EntraAuthPolicyHound/refs/heads/main/bloodhound-opengraph.schema.json"
-                graph = [PSCustomObject]@{
-                    nodes = $hexEnterpriseSamlPayload.Nodes
-                    edges = $hexEnterpriseSamlPayload.Edges
-                }
-            }
-            $enterpriseSamlPayload | ConvertTo-Json -Depth 10 | Out-File -FilePath $enterpriseSamlFilePath
-        } elseif (Test-Path $enterpriseSamlFilePath) {
-            Remove-Item $enterpriseSamlFilePath -Force
-        }
-
-        $enterpriseScimFilePath = Join-Path $CheckpointPath "githound_scim_$entId.json"
-        if ($scimNodes.Count -gt 0 -or $scimEdges.Count -gt 0) {
-            $hexEnterpriseScimPayload = Convert-GitHoundOutputWithIdMap -Nodes $scimNodes -Edges $scimEdges -IdMap $enterpriseOutputIdMap
-            $scimPayload = [PSCustomObject]@{
-                '$schema' = "https://raw.githubusercontent.com/MichaelGrafnetter/EntraAuthPolicyHound/refs/heads/main/bloodhound-opengraph.schema.json"
-                graph = [PSCustomObject]@{
-                    nodes = $hexEnterpriseScimPayload.Nodes
-                    edges = $hexEnterpriseScimPayload.Edges
-                }
-            }
-            $scimPayload | ConvertTo-Json -Depth 10 | Out-File -FilePath $enterpriseScimFilePath
-            Write-Host "[+] SCIM payload: githound_scim_$entId.json ($($scimNodes.Count) nodes, $($scimEdges.Count) edges)"
-        } elseif (Test-Path $enterpriseScimFilePath) {
-            Remove-Item $enterpriseScimFilePath -Force
-        }
-    }
-    $hexEnterprisePayload = Convert-GitHoundOutputWithIdMap -Nodes $filteredNodes -Edges $filteredEdges -IdMap $enterpriseOutputIdMap
     $enterprisePayload = [PSCustomObject]@{
         '$schema' = "https://raw.githubusercontent.com/MichaelGrafnetter/EntraAuthPolicyHound/refs/heads/main/bloodhound-opengraph.schema.json"
         metadata = [PSCustomObject]@{
             source_kind = "GitHub"
         }
         graph = [PSCustomObject]@{
-            nodes = $hexEnterprisePayload.Nodes
-            edges = $hexEnterprisePayload.Edges
+            nodes = $filteredNodes
+            edges = $filteredEdges
         }
     }
     $enterprisePayload | ConvertTo-Json -Depth 10 | Out-File -FilePath (Join-Path $CheckpointPath "githound_$entId.json")
