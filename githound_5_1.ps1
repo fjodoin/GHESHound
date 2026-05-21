@@ -485,9 +485,10 @@ function Invoke-GithubRestMethod {
                     }
 
                     if($LinkHeader) {
+                        Write-Verbose "GET $LinkHeader"
                         $Response = Invoke-WebRequest -UseBasicParsing -Uri "$LinkHeader" @iwrParams
                     } else {
-                        Write-Verbose "https://api.github.com/$($Path)"
+                        Write-Verbose "GET $($Session.Uri)$($Path)"
                         $Response = Invoke-WebRequest -UseBasicParsing -Uri "$($Session.Uri)$($Path)" @iwrParams
                     }
                     $requestSuccessful = $true
@@ -530,6 +531,7 @@ function Invoke-GithubRestMethod {
         if ($ErrorMode -eq 'Stop') {
             throw
         }
+        Write-Host "[!] REST API error on $Path : $_" -ForegroundColor Red
         Write-Error $_
     }
 } 
@@ -577,6 +579,8 @@ function Invoke-GitHubGraphQL
         Headers = $Headers
         Body = $Body
     }
+
+    Write-Verbose "POST $Uri"
 
     $requestSuccessful = $false
     $retryCount = 0
@@ -9965,8 +9969,11 @@ function Git-HoundGHESAllUsers
 
     Write-Host "[*] Enumerating all GHES users with LDAP identity data"
 
-    # Paginate through all users via REST /users endpoint
-    $allUsers = @(Invoke-GithubRestMethod -Session $Session -Path "users?per_page=100")
+    # Paginate through all users via REST /users endpoint (requires site_admin scope)
+    Write-Host "[*] Calling GET /users?per_page=100 (requires site_admin PAT scope)..."
+    $allUsers = @(Invoke-GithubRestMethod -Session $Session -Path "users?per_page=100" -ErrorMode Stop)
+
+    Write-Host "[*] Retrieved $($allUsers.Count) total user records"
 
     # Filter to actual user accounts (skip orgs and bots)
     $userAccounts = @($allUsers | Where-Object { $_.type -eq 'User' -and $_.login -notlike '*[bot]' })
@@ -10167,6 +10174,8 @@ function Invoke-GitHoundGHES
     Write-Host "|  GHESHound -- GitHub Enterprise Server Collector (LDAP mode) |"
     Write-Host "+==============================================================+"
     Write-Host "[*] Target: $ServerUrl"
+    Write-Host "[*] API URI: $apiUri"
+    Write-Host "[*] Use -Verbose for detailed API call logging"
 
     # Create GHES session
     $sessionParams = @{ ApiUri = $apiUri; Token = $Token; IsGHES = $true }
@@ -10188,9 +10197,14 @@ function Invoke-GitHoundGHES
         Write-Host "[*] Resuming: Loaded GHES LDAP Identity data from githound_GHESLdapIdentity.json"
         $ldapIdentity = Import-GitHoundStepOutput -FilePath $ldapStepFile
     } else {
-        $ldapIdentity = Git-HoundGHESAllUsers -Session $baseSession
-        Export-GitHoundStepOutput -StepResult $ldapIdentity -FilePath $ldapStepFile
-        Write-Host "[+] Saved: githound_GHESLdapIdentity.json"
+        try {
+            $ldapIdentity = Git-HoundGHESAllUsers -Session $baseSession
+            Export-GitHoundStepOutput -StepResult $ldapIdentity -FilePath $ldapStepFile
+            Write-Host "[+] Saved: githound_GHESLdapIdentity.json"
+        } catch {
+            Write-Host "[!] Skipping LDAP identity collection (requires site_admin PAT scope): $_"
+            $ldapIdentity = [PSCustomObject]@{ Nodes = @(); Edges = @() }
+        }
     }
 
     # Write LDAP identity payload (separate file, like SAML in cloud mode)
