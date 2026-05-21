@@ -8,6 +8,10 @@
 #   - Ternary operator -> if/else
 #   - ConvertFrom-Json -AsHashtable -> property access
 #   - Invoke-WebRequest uses -UseBasicParsing
+#   - ProgressPreference suppressed (PS 5.1 progress bar kills web request performance)
+
+# Suppress progress bar for Invoke-WebRequest/Invoke-RestMethod (massive PS 5.1 perf fix)
+$ProgressPreference = 'SilentlyContinue'
 
 function Set-GitHoundCertificateBypass {
     <#
