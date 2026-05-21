@@ -10114,6 +10114,14 @@ function Invoke-GitHoundGHES
     .PARAMETER RepositoryName
         Optional. If specified, limits collection to the named repository within each organization.
 
+    .PARAMETER SkipLDAP
+        When set, skips the server-wide LDAP identity collection (GET /users + GET /users/{login}).
+        Use this to avoid the slow 9k+ user enumeration and go straight to org collection.
+
+    .PARAMETER CollectLDAPOnly
+        When set, ONLY collects LDAP user identities and exits. Does not run org collection.
+        Use this to decouple LDAP collection from org collection in large environments.
+
     .EXAMPLE
         Invoke-GitHoundGHES -ServerUrl "https://ghes.example.com" -Token "ghp_xxx"
 
@@ -10122,6 +10130,12 @@ function Invoke-GitHoundGHES
 
     .EXAMPLE
         Invoke-GitHoundGHES -ServerUrl "https://ghes.example.com" -Token "ghp_xxx" -OrganizationName "corp" -RepositoryName "my-repo"
+
+    .EXAMPLE
+        Invoke-GitHoundGHES -ServerUrl "https://ghes.example.com" -Token "ghp_xxx" -OrganizationName "corp" -SkipLDAP
+
+    .EXAMPLE
+        Invoke-GitHoundGHES -ServerUrl "https://ghes.example.com" -Token "ghp_xxx" -CollectLDAPOnly
     #>
     [CmdletBinding()]
     Param(
@@ -10163,7 +10177,15 @@ function Invoke-GitHoundGHES
 
         [Parameter()]
         [string]
-        $RepositoryName
+        $RepositoryName,
+
+        [Parameter()]
+        [switch]
+        $SkipLDAP,
+
+        [Parameter()]
+        [switch]
+        $CollectLDAPOnly
     )
 
     # Normalize server URL
@@ -10175,6 +10197,8 @@ function Invoke-GitHoundGHES
     Write-Host "+==============================================================+"
     Write-Host "[*] Target: $ServerUrl"
     Write-Host "[*] API URI: $apiUri"
+    if ($SkipLDAP) { Write-Host "[*] Mode: SkipLDAP -- skipping LDAP identity collection" }
+    if ($CollectLDAPOnly) { Write-Host "[*] Mode: CollectLDAPOnly -- collecting LDAP identities only, no org collection" }
     Write-Host "[*] Use -Verbose for detailed API call logging"
 
     # Create GHES session
@@ -10192,33 +10216,44 @@ function Invoke-GitHoundGHES
     }
 
     # -- Step 2: Server-wide LDAP Identity Collection ---------------------
-    $ldapStepFile = Join-Path $CheckpointPath "githound_GHESLdapIdentity.json"
-    if ($Resume -and (Test-Path $ldapStepFile)) {
-        Write-Host "[*] Resuming: Loaded GHES LDAP Identity data from githound_GHESLdapIdentity.json"
-        $ldapIdentity = Import-GitHoundStepOutput -FilePath $ldapStepFile
+    if ($SkipLDAP) {
+        Write-Host "[*] Skipping LDAP identity collection (-SkipLDAP)"
     } else {
-        try {
-            $ldapIdentity = Git-HoundGHESAllUsers -Session $baseSession
-            Export-GitHoundStepOutput -StepResult $ldapIdentity -FilePath $ldapStepFile
-            Write-Host "[+] Saved: githound_GHESLdapIdentity.json"
-        } catch {
-            Write-Host "[!] Skipping LDAP identity collection (requires site_admin PAT scope): $_"
-            $ldapIdentity = [PSCustomObject]@{ Nodes = @(); Edges = @() }
+        $ldapStepFile = Join-Path $CheckpointPath "githound_GHESLdapIdentity.json"
+        if ($Resume -and (Test-Path $ldapStepFile)) {
+            Write-Host "[*] Resuming: Loaded GHES LDAP Identity data from githound_GHESLdapIdentity.json"
+            $ldapIdentity = Import-GitHoundStepOutput -FilePath $ldapStepFile
+        } else {
+            try {
+                $ldapIdentity = Git-HoundGHESAllUsers -Session $baseSession
+                Export-GitHoundStepOutput -StepResult $ldapIdentity -FilePath $ldapStepFile
+                Write-Host "[+] Saved: githound_GHESLdapIdentity.json"
+            } catch {
+                Write-Host "[!] LDAP identity collection failed: $_" -ForegroundColor Red
+                $ldapIdentity = [PSCustomObject]@{ Nodes = @(); Edges = @() }
+            }
         }
-    }
 
-    # Write LDAP identity payload (separate file, like SAML in cloud mode)
-    $ldapPayload = [PSCustomObject]@{
-        '$schema' = "https://raw.githubusercontent.com/MichaelGrafnetter/EntraAuthPolicyHound/refs/heads/main/bloodhound-opengraph.schema.json"
-        graph = [PSCustomObject]@{
-            nodes = @($ldapIdentity.Nodes | Where-Object { $_ -ne $null })
-            edges = @($ldapIdentity.Edges | Where-Object { $_ -ne $null })
+        # Write LDAP identity payload (separate file, like SAML in cloud mode)
+        $ldapPayload = [PSCustomObject]@{
+            '$schema' = "https://raw.githubusercontent.com/MichaelGrafnetter/EntraAuthPolicyHound/refs/heads/main/bloodhound-opengraph.schema.json"
+            graph = [PSCustomObject]@{
+                nodes = @($ldapIdentity.Nodes | Where-Object { $_ -ne $null })
+                edges = @($ldapIdentity.Edges | Where-Object { $_ -ne $null })
+            }
+        }
+        $ldapPayload | ConvertTo-Json -Depth 10 | Out-File -FilePath (Join-Path $CheckpointPath "githound_ldap_identity.json")
+        $ldapNodeCount = @($ldapIdentity.Nodes | Where-Object { $_ -ne $null }).Count
+        $ldapEdgeCount = @($ldapIdentity.Edges | Where-Object { $_ -ne $null }).Count
+        Write-Host "[+] LDAP identity payload: githound_ldap_identity.json ($ldapNodeCount nodes, $ldapEdgeCount edges)"
+
+        if ($CollectLDAPOnly) {
+            Write-Host ""
+            Write-Host "[+] CollectLDAPOnly complete. LDAP identity data saved. Exiting."
+            Write-Host "[*] Run again without -CollectLDAPOnly to collect org data (use -SkipLDAP to skip this step)."
+            return
         }
     }
-    $ldapPayload | ConvertTo-Json -Depth 10 | Out-File -FilePath (Join-Path $CheckpointPath "githound_ldap_identity.json")
-    $ldapNodeCount = @($ldapIdentity.Nodes | Where-Object { $_ -ne $null }).Count
-    $ldapEdgeCount = @($ldapIdentity.Edges | Where-Object { $_ -ne $null }).Count
-    Write-Host "[+] LDAP identity payload: githound_ldap_identity.json ($ldapNodeCount nodes, $ldapEdgeCount edges)"
 
     # -- Step 3: Per-Organization Collection ------------------------------
     foreach ($orgLogin in $orgLogins) {
