@@ -1,12 +1,12 @@
-# ── PowerShell 5.1 Compatibility ─────────────────────────────────────────────
+# -- PowerShell 5.1 Compatibility ---------------------------------------------
 # This version has been adapted from the original githound.ps1 (PowerShell 7+)
 # to work with PowerShell 5.1. Key changes:
-#   - SkipCertificateCheck → ServicePointManager callback
-#   - ForEach-Object -Parallel → sequential foreach
-#   - ConcurrentBag → ArrayList
-#   - Null-coalescing (??) → if/else
-#   - Ternary operator → if/else
-#   - ConvertFrom-Json -AsHashtable → property access
+#   - SkipCertificateCheck -> ServicePointManager callback
+#   - ForEach-Object -Parallel -> sequential foreach
+#   - ConcurrentBag -> ArrayList
+#   - Null-coalescing (??) -> if/else
+#   - Ternary operator -> if/else
+#   - ConvertFrom-Json -AsHashtable -> property access
 #   - Invoke-WebRequest uses -UseBasicParsing
 
 function Set-GitHoundCertificateBypass {
@@ -156,7 +156,7 @@ function New-GithubSession {
 
     # Compute GraphQL URI based on API base
     $GraphQlUri = if ($IsGHES) {
-        # GHES: https://HOSTNAME/api/v3/ → https://HOSTNAME/api/graphql
+        # GHES: https://HOSTNAME/api/v3/ -> https://HOSTNAME/api/graphql
         $baseUri = $ApiUri -replace '/api/v3/?$', ''
         "$baseUri/api/graphql"
     } else {
@@ -598,7 +598,7 @@ function Invoke-GitHubGraphQL
                 }
             }
             catch {
-                # ErrorDetails was not valid JSON — check the raw error string
+                # ErrorDetails was not valid JSON -- check the raw error string
                 if ($errorString -match "rate limit" -or $errorString -match "abuse" -or $errorString -match "secondary" -or $errorString -match "429") {
                     $isRateLimit = $true
                 }
@@ -653,7 +653,7 @@ function Get-RateLimitInformation
                 return $rateLimitInfo.resources
             }
         } catch {
-            # Rate limiting not enabled on this GHES instance — return unlimited stub
+            # Rate limiting not enabled on this GHES instance -- return unlimited stub
         }
         $unlimitedStub = [PSCustomObject]@{
             remaining = 999999
@@ -2926,7 +2926,7 @@ function Expand-GitHoundWorkflowGraph
         $wf.properties | Add-Member -NotePropertyName 'prt_branches' -NotePropertyValue (Normalize-Null $prtBranches) -Force
 
         $parsed = $parsed + 1
-        Write-Verbose "Parsed [$parsed]: $($wf.properties.name) — pwn_requestable=$isPwnRequestable"
+        Write-Verbose "Parsed [$parsed]: $($wf.properties.name) -- pwn_requestable=$isPwnRequestable"
     }
 
     Write-Host "[*] Expand-GitHoundWorkflowGraph: Parsed $parsed workflow(s), skipped $skipped. Created $($nodes.Count) nodes, $($edges.Count) edges."
@@ -3258,7 +3258,7 @@ function Git-HoundOrganization
 
     $org = Invoke-GithubRestMethod -Session $Session -Path "orgs/$($Session.OrganizationName)"
 
-    # Actions permissions — may not be available on all GHES instances
+    # Actions permissions -- may not be available on all GHES instances
     $actions = $null
     $workflowPerms = $null
     $selfHostedRunnerSettings = $null
@@ -3537,7 +3537,7 @@ function Git-HoundTeam
     .DESCRIPTION
         This function retrieves teams for each organization provided in the pipeline using the GitHub GraphQL API.
         It creates nodes representing teams, team role nodes (members/maintainers), and GH_HasRole edges linking
-        users to their team roles — all in a single paginated GraphQL query.
+        users to their team roles -- all in a single paginated GraphQL query.
 
         For teams with more than 100 immediate members, follow-up GraphQL queries are made to paginate through
         the remaining members.
@@ -3988,7 +3988,7 @@ function Git-HoundRepository
     $nodes = New-Object System.Collections.ArrayList
     $edges = New-Object System.Collections.ArrayList
 
-    # Pre-loop setup: Actions permissions — may not be available on all instances
+    # Pre-loop setup: Actions permissions -- may not be available on all instances
     $actions = $null
     $selfHostedRunnerSettings = $null
     $enabledRepos = $null
@@ -4599,7 +4599,7 @@ function Git-HoundRepositoryRole
             $maxReposForBudget = [Math]::Floor($availableBudget / $callsPerRepo)
 
             if ($maxReposForBudget -eq 0) {
-                # Not enough budget — sleep until reset
+                # Not enough budget -- sleep until reset
                 $timeNow = [DateTimeOffset]::Now.ToUnixTimeSeconds()
                 $sleepSeconds = [Math]::Max(1, $resetTime - $timeNow + 5) # +5s buffer
                 $resetLocal = ([DateTimeOffset]::FromUnixTimeSeconds($resetTime)).LocalDateTime.ToString("HH:mm:ss")
@@ -4751,10 +4751,10 @@ function Git-HoundBranch
         Creates:
         - GH_Branch nodes for each branch
         - GH_BranchProtectionRule nodes for each protection rule
-        - GH_HasBranch edges (Repository → Branch)
-        - GH_ProtectedBy edges (Rule → Branch)
-        - GH_BypassPullRequestAllowances edges (User/Team → Rule)
-        - GH_RestrictionsCanPush edges (User/Team → Rule)
+        - GH_HasBranch edges (Repository -> Branch)
+        - GH_ProtectedBy edges (Rule -> Branch)
+        - GH_BypassPullRequestAllowances edges (User/Team -> Rule)
+        - GH_RestrictionsCanPush edges (User/Team -> Rule)
 
         Between phases and pages, the GraphQL rate limit is checked. If exhausted, the function
         sleeps until reset and continues. Checkpoint files are written to disk after each page
@@ -4807,7 +4807,7 @@ function Git-HoundBranch
     $totalPages = 0
     $reposProcessed = 0
 
-    # ── Phase 1 Query ──────────────────────────────────────────────────────
+    # -- Phase 1 Query ------------------------------------------------------
     # Paginate org repos with nested refs (branches). Only fetch branchProtectionRule ID
     # to determine protection status. Full protection details are fetched in Phase 3.
 
@@ -4837,7 +4837,7 @@ query RepoRefs($login: String!, $count: Int = 100, $after: String = null) {
 }
 '@
 
-    # ── Phase 2 Query ──────────────────────────────────────────────────────
+    # -- Phase 2 Query ------------------------------------------------------
     # For repos with >100 branches, paginate remaining refs individually.
 
     $RefOverflowQuery = @'
@@ -4859,12 +4859,12 @@ query RefOverflow($owner: String!, $name: String!, $count: Int = 100, $after: St
     $orgLogin = $Organization.properties.login
     $orgNodeId = $Organization.properties.node_id
 
-    # Map: branchProtectionRule ID → list of branch IDs (for Phase 3)
+    # Map: branchProtectionRule ID -> list of branch IDs (for Phase 3)
     $ruleToBranches = @{}
-    # Map: branchProtectionRule ID → { name, id } of its parent repository (for Phase 3)
+    # Map: branchProtectionRule ID -> { name, id } of its parent repository (for Phase 3)
     $ruleToRepo = @{}
 
-    # ── Phase 1: Paginate repos with nested refs ───────────────────────────
+    # -- Phase 1: Paginate repos with nested refs ---------------------------
     $overflowRepos = New-Object System.Collections.ArrayList
     $skipPhase1 = $false
     $skipPhase2 = $false
@@ -4875,9 +4875,9 @@ query RefOverflow($owner: String!, $name: String!, $count: Int = 100, $after: St
         after = $null
     }
 
-    # ── Auto-resume: Check for existing checkpoints (highest precedence first) ──
+    # -- Auto-resume: Check for existing checkpoints (highest precedence first) --
 
-    # Priority 1: Phase 2 complete → skip to Phase 3
+    # Priority 1: Phase 2 complete -> skip to Phase 3
     $phase2File = Join-Path $CheckpointPath "githound_Branch_phase2.json"
     if (Test-Path $phase2File) {
         try {
@@ -4898,7 +4898,7 @@ query RefOverflow($owner: String!, $name: String!, $count: Int = 100, $after: St
         }
     }
 
-    # Priority 2: Phase 1 page checkpoints → resume or skip Phase 1
+    # Priority 2: Phase 1 page checkpoints -> resume or skip Phase 1
     if (-not $skipPhase1) {
         $existingPages = @(Get-ChildItem -Path $CheckpointPath -Filter "githound_Branch_page_*.json" -ErrorAction SilentlyContinue |
             Sort-Object { [int]($_.Name -replace '.*page_(\d+)\.json','$1') })
@@ -5052,7 +5052,7 @@ query RefOverflow($owner: String!, $name: String!, $count: Int = 100, $after: St
     Write-Host "[*] Phase 1 complete. $reposProcessed/$totalRepos repos processed, $($nodes.Count) branches found. $($overflowRepos.Count) repos need overflow pagination (>100 branches)."
     } # end if (-not $skipPhase1)
 
-    # ── Phase 2: Paginate remaining refs for overflow repos ────────────────
+    # -- Phase 2: Paginate remaining refs for overflow repos ----------------
     if (-not $skipPhase2) {
     $overflowCount = 0
     foreach ($overflowRepo in $overflowRepos) {
@@ -5140,7 +5140,7 @@ query RefOverflow($owner: String!, $name: String!, $count: Int = 100, $after: St
     Write-Host "[*] Phase 2 complete. $($nodes.Count) total branch nodes. $($ruleToBranches.Count) protection rules found."
     } # end if (-not $skipPhase2)
 
-    # ── Phase 3: Fetch protection rules by node ID ─────────────────────────
+    # -- Phase 3: Fetch protection rules by node ID -------------------------
     # Query protection rule details in batches using GraphQL nodes() query.
     # This is much more efficient than querying per-repository.
 
@@ -5334,7 +5334,7 @@ function Compute-GitHoundBranchAccess
           Bypassed by: admin, push_protected_branch, pushAllowances
           NOT affected by enforce_admins
 
-        This function makes no API calls — it is a pure in-memory computation over
+        This function makes no API calls -- it is a pure in-memory computation over
         previously collected nodes and edges.
 
     .PARAMETER Nodes
@@ -5362,7 +5362,7 @@ function Compute-GitHoundBranchAccess
     $computedEdges = New-Object System.Collections.ArrayList
     $emittedEdges = @{} # Deduplication: "actorId|targetId|edgeKind" -> $true
 
-    # ── Phase 1: Build indexes ─────────────────────────────────────────────
+    # -- Phase 1: Build indexes ---------------------------------------------
 
     Write-Host "[*]   Phase 1: Building indexes from $($Nodes.Count) nodes and $($Edges.Count) edges..."
 
@@ -5555,7 +5555,7 @@ function Compute-GitHoundBranchAccess
 
     Write-Host "[*]   Phase 1 complete. $($repoIds.Count) repos, $($repoBranches.Count) repos with branches, $($branchToBPR.Count) protected branches."
 
-    # ── Phase 2: Build role full permission sets ─────────────────────────
+    # -- Phase 2: Build role full permission sets -------------------------
 
     Write-Host "[*]   Phase 2: Resolving role permissions..."
 
@@ -5694,7 +5694,7 @@ function Compute-GitHoundBranchAccess
     }
     Write-Host "[*]   Phase 2 complete. $totalRoleRepoPairs role-repo write pairs resolved."
 
-    # ── Phase 3a: Role-level computed edges ────────────────────────────────
+    # -- Phase 3a: Role-level computed edges --------------------------------
 
     Write-Host "[*]   Phase 3a: Computing role-level access edges..."
 
@@ -5758,7 +5758,7 @@ function Compute-GitHoundBranchAccess
             $hasLockBranch = Test-BPRProperty $bp.lock_branch
             $hasPushRestrictions = Test-BPRProperty $bp.push_restrictions
 
-            # ── Evaluate merge gate ──
+            # -- Evaluate merge gate --
             $mergeGateBlocked = $hasPRReviews -or $hasLockBranch
             $passesMergeGate = $false
             $mergeReason = $null
@@ -5776,7 +5776,7 @@ function Compute-GitHoundBranchAccess
             }
             # Note: bypassPRAllowances is per-actor, not evaluated here (handled in Phase 3b)
 
-            # ── Evaluate push gate ──
+            # -- Evaluate push gate --
             $pushGateBlocked = $hasPushRestrictions
             $passesPushGate = $false
             $pushReason = $null
@@ -5794,7 +5794,7 @@ function Compute-GitHoundBranchAccess
             }
             # Note: pushAllowances is per-actor, not evaluated here (handled in Phase 3b)
 
-            # ── Combined result ──
+            # -- Combined result --
             if ($passesMergeGate -and $passesPushGate) {
                 $null = $accessible.Add($branchId)
                 if ($mergeReason -and $pushReason) {
@@ -5845,7 +5845,7 @@ function Compute-GitHoundBranchAccess
             $hasBypassBranch = $perms.Contains('GH_BypassBranchProtection')
             $hasEditProtections = $perms.Contains('GH_EditRepoProtections')
 
-            # ── GH_CanEditProtection (role -> repo and each protected branch) ──
+            # -- GH_CanEditProtection (role -> repo and each protected branch) --
             if ($hasEditProtections -or $hasAdmin) {
                 $reason = if ($hasAdmin) { 'admin' } else { 'edit_repo_protections' }
                 if ($bprs.Count -gt 0) {
@@ -5862,7 +5862,7 @@ function Compute-GitHoundBranchAccess
                 }
             }
 
-            # ── GH_CanCreateBranch (role -> repo) ──
+            # -- GH_CanCreateBranch (role -> repo) --
             $roleCanCreate[$roleId] = $false
             if (-not $wildcardBlockingBPR) {
                 Add-ComputedEdge -Kind 'GH_CanCreateBranch' -StartId $roleId -EndId $repoId `
@@ -5886,7 +5886,7 @@ function Compute-GitHoundBranchAccess
                 }
             }
 
-            # ── GH_CanWriteBranch (role -> branch or repo) ──
+            # -- GH_CanWriteBranch (role -> branch or repo) --
             $gateResult = Invoke-RoleGateEvaluation -Perms $perms -Branches $branches -BranchToBPR $branchToBPR
             $accessibleBranches = $gateResult.accessible
             $branchReasons = $gateResult.reasons
@@ -5916,7 +5916,7 @@ function Compute-GitHoundBranchAccess
 
     Write-Host "[+]   Phase 3a complete. $($computedEdges.Count) role-level edges."
 
-    # ── Phase 3b: Per-actor allowance edges (delta only) ───────────────────
+    # -- Phase 3b: Per-actor allowance edges (delta only) -------------------
 
     Write-Host "[*]   Phase 3b: Computing per-actor allowance edges..."
 
@@ -5983,7 +5983,7 @@ function Compute-GitHoundBranchAccess
             }
             if (-not $actorHasWrite) { continue }
 
-            # ── GH_CanCreateBranch: delta for pushAllowances on wildcard BPR ──
+            # -- GH_CanCreateBranch: delta for pushAllowances on wildcard BPR --
             if ($wildcardBlockingBPR -and -not $actorRoleCanCreate) {
                 $wildcardBPRId = $wildcardBlockingBPR.properties.id
                 $inPushAllowances = $pushAllowanceActors.ContainsKey($wildcardBPRId) -and $pushAllowanceActors[$wildcardBPRId].Contains($actorId)
@@ -5994,7 +5994,7 @@ function Compute-GitHoundBranchAccess
                 }
             }
 
-            # ── GH_CanWriteBranch: delta for branches not covered by role-level edges ──
+            # -- GH_CanWriteBranch: delta for branches not covered by role-level edges --
             $deltaAccessible = New-Object System.Collections.ArrayList
             $deltaReasons = @{}
 
@@ -6097,7 +6097,7 @@ function Compute-GitHoundSecretScanningAccess
         - GH_CanReadSecretScanningAlert (GH_OrgRole -> GH_SecretScanningAlert): Org role can read all alerts in the org
         - GH_CanReadSecretScanningAlert (GH_RepoRole -> GH_SecretScanningAlert): Repo role can read alerts in the repo
 
-        This function makes no API calls — it is a pure in-memory computation over
+        This function makes no API calls -- it is a pure in-memory computation over
         previously collected nodes and edges.
 
     .PARAMETER Nodes
@@ -6139,7 +6139,7 @@ function Compute-GitHoundSecretScanningAccess
         $null = $computedEdges.Add((New-GitHoundEdge -Kind $Kind -StartId $StartId -EndId $EndId -Properties $Properties))
     }
 
-    # ── Phase 1: Build indexes ─────────────────────────────────────────────
+    # -- Phase 1: Build indexes ---------------------------------------------
 
     Write-Host "[*]   Phase 1: Building indexes..."
 
@@ -6159,7 +6159,7 @@ function Compute-GitHoundSecretScanningAccess
         }
     }
 
-    # Build org→alerts and repo→alerts maps from GH_Contains edges where target is a SecretScanningAlert
+    # Build org->alerts and repo->alerts maps from GH_Contains edges where target is a SecretScanningAlert
     $orgAlerts = @{}
     $repoAlerts = @{}
 
@@ -6201,7 +6201,7 @@ function Compute-GitHoundSecretScanningAccess
 
     Write-Host "[+]   Phase 1 complete. $($alertNodeIds.Count) alerts, $($orgViewEdges.Count) org-level and $($repoViewEdges.Count) repo-level view permission edges."
 
-    # ── Phase 2: Org-level emission ────────────────────────────────────────
+    # -- Phase 2: Org-level emission ----------------------------------------
 
     Write-Host "[*]   Phase 2: Computing org-level GH_CanReadSecretScanningAlert edges..."
 
@@ -6223,7 +6223,7 @@ function Compute-GitHoundSecretScanningAccess
     $orgEdgeCount = $computedEdges.Count
     Write-Host "[+]   Phase 2 complete. $orgEdgeCount org-level edges."
 
-    # ── Phase 3: Repo-level emission ───────────────────────────────────────
+    # -- Phase 3: Repo-level emission ---------------------------------------
 
     Write-Host "[*]   Phase 3: Computing repo-level GH_CanReadSecretScanningAlert edges..."
 
@@ -6262,7 +6262,7 @@ function Git-HoundWorkflow
 
     .DESCRIPTION
         This function retrieves workflows for each repository provided in the pipeline. Only repos
-        with Actions enabled (actions_enabled = true) are queried — repos without Actions are skipped
+        with Actions enabled (actions_enabled = true) are queried -- repos without Actions are skipped
         to avoid wasted API calls. Uses chunked parallel execution with rate limit awareness and
         checkpoint files for crash recovery.
 
@@ -6337,7 +6337,7 @@ function Git-HoundWorkflow
 
     process
     {
-        # Filter to only repos with Actions enabled — no point querying repos that have Actions disabled
+        # Filter to only repos with Actions enabled -- no point querying repos that have Actions disabled
         $allRepoNodes = @($Repository.nodes | Where-Object {$_.kinds -eq 'GH_Repository'})
         $repoNodes = @($allRepoNodes | Where-Object {$_.properties.actions_enabled -eq $true})
         $skippedCount = $allRepoNodes.Count - $repoNodes.Count
@@ -6388,7 +6388,7 @@ function Git-HoundWorkflow
             $maxReposForBudget = [Math]::Floor($availableBudget / $callsPerRepo)
 
             if ($maxReposForBudget -eq 0) {
-                # Not enough budget — sleep until reset
+                # Not enough budget -- sleep until reset
                 $timeNow = [DateTimeOffset]::Now.ToUnixTimeSeconds()
                 $sleepSeconds = [Math]::Max(1, $resetTime - $timeNow + 5)
                 $resetLocal = ([DateTimeOffset]::FromUnixTimeSeconds($resetTime)).LocalDateTime.ToString("HH:mm:ss")
@@ -6429,7 +6429,7 @@ function Git-HoundWorkflow
                             }
                         } catch {
                             if ($WorkflowsAllBranches) {
-                                # Workflow not on default branch — try other branches
+                                # Workflow not on default branch -- try other branches
                                 try {
                                     $branches = Invoke-GithubRestMethod -Session $Session -Path "repos/$($repo.properties.full_name)/branches" -ErrorAction Stop
                                     foreach ($branch in $branches) {
@@ -6451,7 +6451,7 @@ function Git-HoundWorkflow
                                     Write-Warning "Could not download workflow contents for $($repo.properties.full_name)/$($workflow.path) on any branch"
                                 }
                             } else {
-                                Write-Warning "Workflow $($repo.properties.full_name)/$($workflow.path) not found on default branch ($($repo.properties.default_branch)) — skipping (use -WorkflowsAllBranches to search other branches)"
+                                Write-Warning "Workflow $($repo.properties.full_name)/$($workflow.path) not found on default branch ($($repo.properties.default_branch)) -- skipping (use -WorkflowsAllBranches to search other branches)"
                             }
                         }
                     } else {
@@ -7143,7 +7143,7 @@ function Git-HoundOrganizationSecret
 
         Write-Host "[+] Git-HoundOrganizationSecret: $($nodes.Count) secret nodes, $($edges.Count) secret edges."
 
-        # ── Organization Variables ─────────────────────────────────────────
+        # -- Organization Variables -----------------------------------------
         # https://docs.github.com/en/rest/actions/variables?apiVersion=2022-11-28#list-organization-variables
         # Fine Grained Permissions: "Variables" organization permissions (read)
         try {
@@ -7243,7 +7243,7 @@ function Git-HoundSecret
         Fetches and processes GitHub repository-level Actions secrets.
 
     .DESCRIPTION
-        This function retrieves repository-level Actions secrets (not org secrets — those are handled
+        This function retrieves repository-level Actions secrets (not org secrets -- those are handled
         by Git-HoundOrganizationSecret). Uses chunked parallel execution with rate limit awareness
         and checkpoint files for crash recovery.
 
@@ -7348,7 +7348,7 @@ function Git-HoundSecret
             $maxReposForBudget = [Math]::Floor($availableBudget / $callsPerRepo)
 
             if ($maxReposForBudget -eq 0) {
-                # Not enough budget — sleep until reset
+                # Not enough budget -- sleep until reset
                 $timeNow = [DateTimeOffset]::Now.ToUnixTimeSeconds()
                 $sleepSeconds = [Math]::Max(1, $resetTime - $timeNow + 5)
                 $resetLocal = ([DateTimeOffset]::FromUnixTimeSeconds($resetTime)).LocalDateTime.ToString("HH:mm:ss")
@@ -7487,7 +7487,7 @@ function Git-HoundVariable
         Fetches and processes GitHub repository-level Actions variables.
 
     .DESCRIPTION
-        This function retrieves repository-level Actions variables (not org variables — those are handled
+        This function retrieves repository-level Actions variables (not org variables -- those are handled
         by Git-HoundOrganizationSecret). Uses chunked parallel execution with rate limit awareness
         and checkpoint files for crash recovery.
 
@@ -7592,7 +7592,7 @@ function Git-HoundVariable
             $maxReposForBudget = [Math]::Floor($availableBudget / $callsPerRepo)
 
             if ($maxReposForBudget -eq 0) {
-                # Not enough budget — sleep until reset
+                # Not enough budget -- sleep until reset
                 $timeNow = [DateTimeOffset]::Now.ToUnixTimeSeconds()
                 $sleepSeconds = [Math]::Max(1, $resetTime - $timeNow + 5)
                 $resetLocal = ([DateTimeOffset]::FromUnixTimeSeconds($resetTime)).LocalDateTime.ToString("HH:mm:ss")
@@ -7771,7 +7771,7 @@ function Git-HoundSecretScanningAlert
     $nodes = New-Object System.Collections.ArrayList
     $edges = New-Object System.Collections.ArrayList
 
-    # Secret scanning alerts — requires GHAS license on GHES
+    # Secret scanning alerts -- requires GHAS license on GHES
     $alertList = @()
     try {
         $alertList = @(Invoke-GithubRestMethod -Session $Session -Path "orgs/$($Organization.Properties.login)/secret-scanning/alerts" -ErrorMode Stop)
@@ -7968,7 +7968,7 @@ function Git-HoundAppInstallation
                 }
             } else {
                 $selectedCount++
-                # Cannot enumerate selected repositories with a PAT — requires app installation token
+                # Cannot enumerate selected repositories with a PAT -- requires app installation token
             }
 
             # Collect unique app slugs for GH_App node creation
@@ -8107,7 +8107,7 @@ function Git-HoundPersonalAccessToken
         # Pre-compute all repo node IDs for "all" repository_selection
         $allRepoNodeIds = @($repoNodes | ForEach-Object { $_.properties.node_id })
 
-        # Fine-grained PAT enumeration — may not be available on all instances
+        # Fine-grained PAT enumeration -- may not be available on all instances
         $pats = @()
         try {
             $pats = @(Invoke-GithubRestMethod -Session $Session -Path "orgs/$orgLogin/personal-access-tokens" -ErrorMode Stop)
@@ -8233,7 +8233,7 @@ function Git-HoundPersonalAccessTokenRequest
     $orgLogin = $Organization.properties.login
     $orgNodeId = $Organization.properties.node_id
 
-    # PAT request enumeration — may not be available on all instances
+    # PAT request enumeration -- may not be available on all instances
     $patRequests = @()
     try {
         $patRequests = @(Invoke-GithubRestMethod -Session $Session -Path "orgs/$orgLogin/personal-access-token-requests" -ErrorMode Stop)
@@ -8617,12 +8617,12 @@ function Parse-GitHoundOIDCSubject
         GitHub OIDC subject claim format: repo:{org}/{repo}:{qualifier}
 
         Supported qualifiers:
-          - ref:refs/heads/{branch}    → GH_Branch    (name: {repo}\{branch})
-          - ref:refs/tags/{tag}        → GH_Repository (name: {repo}) [tag-level not tracked, falls back to repo]
-          - environment:{envName}      → GH_Environment (name: {repo}\{envName})
-          - *                          → GH_Repository (name: {repo})
-          - pull_request               → GH_Repository (name: {repo}) [PR-level not tracked, falls back to repo]
-          - job_workflow_ref:{path}    → GH_Repository (name: {repo}) [workflow ref not tracked, falls back to repo]
+          - ref:refs/heads/{branch}    -> GH_Branch    (name: {repo}\{branch})
+          - ref:refs/tags/{tag}        -> GH_Repository (name: {repo}) [tag-level not tracked, falls back to repo]
+          - environment:{envName}      -> GH_Environment (name: {repo}\{envName})
+          - *                          -> GH_Repository (name: {repo})
+          - pull_request               -> GH_Repository (name: {repo}) [PR-level not tracked, falls back to repo]
+          - job_workflow_ref:{path}    -> GH_Repository (name: {repo}) [workflow ref not tracked, falls back to repo]
 
     .PARAMETER FederatedIdentityCredentials
         An array of AZFederatedIdentityCredential node objects. Each node must have:
@@ -9073,7 +9073,7 @@ function Invoke-GitHound
 
     Write-Host "[*] Starting GitHound for $($Session.OrganizationName)"
 
-    # ── Step 1: Organization ───────────────────────────────────────────────
+    # -- Step 1: Organization -----------------------------------------------
     # Bootstrap: discover org ID for file naming. Check for existing file first on resume.
     $orgId = $null
     if ($Resume) {
@@ -9098,7 +9098,7 @@ function Invoke-GitHound
     if($org.nodes) { $nodes.AddRange(@($org.nodes)) }
     if($org.edges) { $edges.AddRange(@($org.edges)) }
 
-    # ── Step 2: Users ──────────────────────────────────────────────────────
+    # -- Step 2: Users ------------------------------------------------------
     $stepFile = Join-Path $CheckpointPath "githound_User_$orgId.json"
     if ($Resume -and (Test-Path $stepFile)) {
         Write-Host "[*] Resuming: Loaded Users from githound_User_$orgId.json"
@@ -9112,7 +9112,7 @@ function Invoke-GitHound
     if($users.nodes) { $nodes.AddRange(@($users.nodes)) }
     if($users.edges) { $edges.AddRange(@($users.edges)) }
 
-    # ── Step 3: Teams ──────────────────────────────────────────────────────
+    # -- Step 3: Teams ------------------------------------------------------
     $stepFile = Join-Path $CheckpointPath "githound_Team_$orgId.json"
     if ($Resume -and (Test-Path $stepFile)) {
         Write-Host "[*] Resuming: Loaded Teams from githound_Team_$orgId.json"
@@ -9126,7 +9126,7 @@ function Invoke-GitHound
     if($teams.nodes) { $nodes.AddRange(@($teams.nodes)) }
     if($teams.edges) { $edges.AddRange(@($teams.edges)) }
 
-    # ── Step 4: Repositories ──────────────────────────────────────────────
+    # -- Step 4: Repositories ----------------------------------------------
     $stepFile = Join-Path $CheckpointPath "githound_Repository_$orgId.json"
     if ($Resume -and (Test-Path $stepFile)) {
         Write-Host "[*] Resuming: Loaded Repositories from githound_Repository_$orgId.json"
@@ -9137,7 +9137,7 @@ function Invoke-GitHound
         Export-GitHoundStepOutput -StepResult $repos -FilePath $stepFile
         Write-Host "[+] Saved: githound_Repository_$orgId.json"
     }
-    # ── Repository Filter ─────────────────────────────────────────────
+    # -- Repository Filter ---------------------------------------------
     if ($RepositoryName) {
         $matchedNodes = @($repos.nodes | Where-Object { $_.properties.name -eq $RepositoryName })
         if ($matchedNodes.Count -eq 0) {
@@ -9154,7 +9154,7 @@ function Invoke-GitHound
     if($repos.nodes) { $nodes.AddRange(@($repos.nodes)) }
     if($repos.edges) { $edges.AddRange(@($repos.edges)) }
 
-    # ── Step 5: Repository Roles ──────────────────────────────────────────
+    # -- Step 5: Repository Roles ------------------------------------------
     # Check for per-step file, then _complete.json from internal checkpointing
     $stepFile = Join-Path $CheckpointPath "githound_RepoRole_$orgId.json"
     $completeFile = Join-Path $CheckpointPath "githound_RepoRole_complete.json"
@@ -9175,7 +9175,7 @@ function Invoke-GitHound
     if($reporoles.nodes) { $nodes.AddRange(@($reporoles.nodes)) }
     if($reporoles.edges) { $edges.AddRange(@($reporoles.edges)) }
 
-    # ── Step 6: Branches ──────────────────────────────────────────────────
+    # -- Step 6: Branches --------------------------------------------------
     $stepFile = Join-Path $CheckpointPath "githound_Branch_$orgId.json"
     $completeFile = Join-Path $CheckpointPath "githound_Branch_complete.json"
     if ($Resume -and (Test-Path $stepFile)) {
@@ -9195,12 +9195,12 @@ function Invoke-GitHound
     if($branches.nodes) { $nodes.AddRange(@($branches.nodes)) }
     if($branches.edges) { $edges.AddRange(@($branches.edges)) }
 
-    # ── Computed Edges: Branch Access ────────────────────────────────────────
+    # -- Computed Edges: Branch Access ----------------------------------------
     Write-Host "[*] Computing branch access edges (GH_CanWriteBranch, GH_CanCreateBranch, GH_CanEditProtection)"
     $branchAccess = Compute-GitHoundBranchAccess -Nodes $nodes -Edges $edges
     if($branchAccess.edges) { $edges.AddRange(@($branchAccess.edges)) }
 
-    # ── Step 7: Workflows (requires -CollectAll) ────────────────────────────
+    # -- Step 7: Workflows (requires -CollectAll) ----------------------------
     if ($CollectAll) {
         $stepFile = Join-Path $CheckpointPath "githound_Workflow_$orgId.json"
         $completeFile = Join-Path $CheckpointPath "githound_Workflow_complete.json"
@@ -9229,7 +9229,7 @@ function Invoke-GitHound
         Write-Host "[*] Skipping Workflows (use -CollectAll to include)"
     }
 
-    # ── Step 7.5: Self-Hosted Runners (requires -CollectAll) ──────────────
+    # -- Step 7.5: Self-Hosted Runners (requires -CollectAll) --------------
     if ($CollectAll) {
         $stepFile = Join-Path $CheckpointPath "githound_Runner_$orgId.json"
         if ($Resume -and (Test-Path $stepFile)) {
@@ -9247,7 +9247,7 @@ function Invoke-GitHound
         Write-Host "[*] Skipping Self-Hosted Runners (use -CollectAll to include)"
     }
 
-    # ── Step 8: Environments (requires -CollectAll) ───────────────────────
+    # -- Step 8: Environments (requires -CollectAll) -----------------------
     if ($CollectAll) {
         $stepFile = Join-Path $CheckpointPath "githound_Environment_$orgId.json"
         if ($Resume -and (Test-Path $stepFile)) {
@@ -9265,7 +9265,7 @@ function Invoke-GitHound
         Write-Host "[*] Skipping Environments (use -CollectAll to include)"
     }
 
-    # ── Step 9: Organization Secrets ───────────────────────────────────────
+    # -- Step 9: Organization Secrets ---------------------------------------
     $stepFile = Join-Path $CheckpointPath "githound_OrgSecret_$orgId.json"
     if ($Resume -and (Test-Path $stepFile)) {
         Write-Host "[*] Resuming: Loaded Organization Secrets from githound_OrgSecret_$orgId.json"
@@ -9279,7 +9279,7 @@ function Invoke-GitHound
     if($orgsecrets.nodes) { $nodes.AddRange(@($orgsecrets.nodes)) }
     if($orgsecrets.edges) { $edges.AddRange(@($orgsecrets.edges)) }
 
-    # ── Step 10: Repository Secrets (requires -CollectAll) ─────────────────
+    # -- Step 10: Repository Secrets (requires -CollectAll) -----------------
     if ($CollectAll) {
         $stepFile = Join-Path $CheckpointPath "githound_Secret_$orgId.json"
         $completeFile = Join-Path $CheckpointPath "githound_Secret_complete.json"
@@ -9303,7 +9303,7 @@ function Invoke-GitHound
         Write-Host "[*] Skipping Repository Secrets (use -CollectAll to include)"
     }
 
-    # ── Step 10.5: Repository Variables (requires -CollectAll) ──────────
+    # -- Step 10.5: Repository Variables (requires -CollectAll) ----------
     if ($CollectAll) {
         $stepFile = Join-Path $CheckpointPath "githound_Variable_$orgId.json"
         $completeFile = Join-Path $CheckpointPath "githound_Variable_complete.json"
@@ -9327,7 +9327,7 @@ function Invoke-GitHound
         Write-Host "[*] Skipping Repository Variables (use -CollectAll to include)"
     }
 
-    # ── Step 10.75: Workflow Analysis (requires -CollectAll) ─────────────
+    # -- Step 10.75: Workflow Analysis (requires -CollectAll) -------------
     if ($CollectAll) {
         $stepFile = Join-Path $CheckpointPath "githound_WorkflowAnalysis_$orgId.json"
         if ($Resume -and (Test-Path $stepFile)) {
@@ -9350,7 +9350,7 @@ function Invoke-GitHound
         Write-Host "[*] Skipping Workflow Analysis (use -CollectAll to include)"
     }
 
-    # ── Step 11: Secret Scanning Alerts ─────────────────────────────────
+    # -- Step 11: Secret Scanning Alerts ---------------------------------
     $stepFile = Join-Path $CheckpointPath "githound_SecretAlerts_$orgId.json"
     if ($Resume -and (Test-Path $stepFile)) {
         Write-Host "[*] Resuming: Loaded Secret Scanning Alerts from githound_SecretAlerts_$orgId.json"
@@ -9364,12 +9364,12 @@ function Invoke-GitHound
     if($secretalerts.nodes) { $nodes.AddRange(@($secretalerts.nodes)) }
     if($secretalerts.edges) { $edges.AddRange(@($secretalerts.edges)) }
 
-    # ── Computed Edges: Secret Scanning Access ────────────────────────────
+    # -- Computed Edges: Secret Scanning Access ----------------------------
     Write-Host "[*] Computing secret scanning access edges (GH_CanReadSecretScanningAlert)"
     $secretScanningAccess = Compute-GitHoundSecretScanningAccess -Nodes $nodes -Edges $edges
     if($secretScanningAccess.edges) { $edges.AddRange(@($secretScanningAccess.edges)) }
 
-    # ── Step 12: App Installations (requires -CollectAll) ──────────────────
+    # -- Step 12: App Installations (requires -CollectAll) ------------------
     if ($CollectAll) {
         $stepFile = Join-Path $CheckpointPath "githound_AppInstallation_$orgId.json"
         if ($Resume -and (Test-Path $stepFile)) {
@@ -9387,7 +9387,7 @@ function Invoke-GitHound
         Write-Host "[*] Skipping App Installations (use -CollectAll to include)"
     }
 
-    # ── Step 13: Personal Access Tokens (requires -CollectAll) ──────────
+    # -- Step 13: Personal Access Tokens (requires -CollectAll) ----------
     if ($CollectAll) {
         $stepFile = Join-Path $CheckpointPath "githound_PersonalAccessToken_$orgId.json"
         if ($Resume -and (Test-Path $stepFile)) {
@@ -9405,7 +9405,7 @@ function Invoke-GitHound
         Write-Host "[*] Skipping Personal Access Tokens (use -CollectAll to include)"
     }
 
-    # ── Step 14: Personal Access Token Requests (requires -CollectAll) ──
+    # -- Step 14: Personal Access Token Requests (requires -CollectAll) --
     if ($CollectAll) {
         $stepFile = Join-Path $CheckpointPath "githound_PersonalAccessTokenRequest_$orgId.json"
         if ($Resume -and (Test-Path $stepFile)) {
@@ -9423,7 +9423,7 @@ function Invoke-GitHound
         Write-Host "[*] Skipping Personal Access Token Requests (use -CollectAll to include)"
     }
 
-    # ── Final Consolidation ───────────────────────────────────────────────
+    # -- Final Consolidation -----------------------------------------------
     Write-Host "[*] Consolidating to OpenGraph JSON Payload"
     # Filter out any null entries that may have been introduced by thread-safety issues or API errors
     $filteredNodes = @($nodes | Where-Object { $_ -ne $null })
@@ -9446,7 +9446,7 @@ function Invoke-GitHound
     } | ConvertTo-Json -Depth 10 | Out-File -FilePath $consolidatedFile
     Write-Host "[+] Consolidated payload: $consolidatedFile ($($filteredNodes.Count) nodes, $($filteredEdges.Count) edges)"
 
-    # ── Cleanup Intermediates ─────────────────────────────────────────────
+    # -- Cleanup Intermediates ---------------------------------------------
     if ($CleanupIntermediates) {
         $stepFileNames = @(
             "githound_Organization_$orgId.json",
@@ -9484,7 +9484,7 @@ function Invoke-GitHound
         }
     }
 
-    # ── SAML (separate output, not included in consolidated payload) ──────
+    # -- SAML (separate output, not included in consolidated payload) ------
     if (-not $IsGHES) {
     Write-Host "[*] Enumerating SAML Identity Provider"
     $samlNodes = New-Object System.Collections.ArrayList
@@ -9501,7 +9501,7 @@ function Invoke-GitHound
         }
     } | ConvertTo-Json -Depth 10 | Out-File -FilePath (Join-Path $CheckpointPath "githound_saml_$orgId.json")
 
-    # ── SCIM (separate output, not included in consolidated payload) ──────
+    # -- SCIM (separate output, not included in consolidated payload) ------
     if ($CollectAll) {
         Write-Host "[*] Enumerating SCIM Users"
         $scimNodes = New-Object System.Collections.ArrayList
@@ -9525,7 +9525,7 @@ function Invoke-GitHound
         Write-Host "[*] Skipping SCIM Users (use -CollectAll to include)"
     }
 
-    # ── OIDC (separate output, not included in consolidated payload) ──────
+    # -- OIDC (separate output, not included in consolidated payload) ------
     $fidcJsonPath = Join-Path $CheckpointPath "azurehound_federatedidentitycredentials.json"
     if(Test-Path $fidcJsonPath)
     {
@@ -9553,7 +9553,7 @@ function Invoke-GitHound
         Write-Host "    To enable, provide AZFederatedIdentityCredential data in: $fidcJsonPath"
     }
     } else {
-        Write-Host "[*] Skipping SAML/SCIM/OIDC (not applicable in GHES mode — LDAP identity handled at server level)"
+        Write-Host "[*] Skipping SAML/SCIM/OIDC (not applicable in GHES mode -- LDAP identity handled at server level)"
     }
 
     Write-Host "[+] GitHound collection complete for $($Session.OrganizationName)."
@@ -9666,7 +9666,7 @@ function Invoke-GitHoundEnterprise
 
     Write-Host "[*] Starting GitHound enterprise wrapper for $enterpriseSlug"
 
-    # ── Step 1: Enterprise ───────────────────────────────────────────────
+    # -- Step 1: Enterprise -----------------------------------------------
     $entId = $null
     if ($Resume) {
         $enterpriseFiles = @(Get-ChildItem -Path $CheckpointPath -Filter "githound_Enterprise_*.json" -ErrorAction SilentlyContinue)
@@ -9689,7 +9689,7 @@ function Invoke-GitHoundEnterprise
     if($enterprise.Nodes) { $nodes.AddRange(@($enterprise.Nodes)) }
     if($enterprise.Edges) { $edges.AddRange(@($enterprise.Edges)) }
 
-    # ── Step 2: Enterprise Users ─────────────────────────────────────────
+    # -- Step 2: Enterprise Users -----------------------------------------
     $stepFile = Join-Path $CheckpointPath "githound_EnterpriseUser_$entId.json"
     if ($Resume -and (Test-Path $stepFile)) {
         Write-Host "[*] Resuming: Loaded Enterprise Users from githound_EnterpriseUser_$entId.json"
@@ -9703,7 +9703,7 @@ function Invoke-GitHoundEnterprise
     if($enterpriseUsers.Nodes) { $nodes.AddRange(@($enterpriseUsers.Nodes)) }
     if($enterpriseUsers.Edges) { $edges.AddRange(@($enterpriseUsers.Edges)) }
 
-    # ── Step 3: Enterprise Teams ─────────────────────────────────────────
+    # -- Step 3: Enterprise Teams -----------------------------------------
     $stepFile = Join-Path $CheckpointPath "githound_EnterpriseTeam_$entId.json"
     if ($Resume -and (Test-Path $stepFile)) {
         Write-Host "[*] Resuming: Loaded Enterprise Teams from githound_EnterpriseTeam_$entId.json"
@@ -9717,7 +9717,7 @@ function Invoke-GitHoundEnterprise
     if($enterpriseTeams.Nodes) { $nodes.AddRange(@($enterpriseTeams.Nodes)) }
     if($enterpriseTeams.Edges) { $edges.AddRange(@($enterpriseTeams.Edges)) }
 
-    # ── Step 4: Enterprise Roles ─────────────────────────────────────────
+    # -- Step 4: Enterprise Roles -----------------------------------------
     $stepFile = Join-Path $CheckpointPath "githound_EnterpriseRole_$entId.json"
     if ($Resume -and (Test-Path $stepFile)) {
         Write-Host "[*] Resuming: Loaded Enterprise Roles from githound_EnterpriseRole_$entId.json"
@@ -9731,7 +9731,7 @@ function Invoke-GitHoundEnterprise
     if($enterpriseRoles.Nodes) { $nodes.AddRange(@($enterpriseRoles.Nodes)) }
     if($enterpriseRoles.Edges) { $edges.AddRange(@($enterpriseRoles.Edges)) }
 
-    # ── Step 5: Enterprise SCIM Users ────────────────────────────────────
+    # -- Step 5: Enterprise SCIM Users ------------------------------------
     $enterpriseScimUsers = [PSCustomObject]@{
         Nodes = @()
         Edges = @()
@@ -9757,7 +9757,7 @@ function Invoke-GitHoundEnterprise
         Write-Host "[*] Skipping Enterprise SCIM Users (session does not contain a PAT)"
     }
 
-    # ── Step 6: Enterprise SCIM Groups ───────────────────────────────────
+    # -- Step 6: Enterprise SCIM Groups -----------------------------------
     if ($Session.HasPersonalAccessToken) {
         $stepFile = Join-Path $CheckpointPath "githound_EnterpriseSCIMGroup_$entId.json"
         if ($Resume -and (Test-Path $stepFile)) {
@@ -9774,7 +9774,7 @@ function Invoke-GitHoundEnterprise
         Write-Host "[*] Skipping Enterprise SCIM Groups (session does not contain a PAT)"
     }
 
-    # ── Step 7: Enterprise SAML (separate output) ────────────────────────
+    # -- Step 7: Enterprise SAML (separate output) ------------------------
     if ($Session.HasPersonalAccessToken) {
         $stepFile = Join-Path $CheckpointPath "githound_EnterpriseSaml_$entId.json"
         if ($Resume -and (Test-Path $stepFile)) {
@@ -9819,7 +9819,7 @@ function Invoke-GitHoundEnterprise
         Write-Host "[*] Skipping Enterprise SAML (session does not contain a PAT)"
     }
 
-    # ── Enterprise Consolidation ─────────────────────────────────────────
+    # -- Enterprise Consolidation -----------------------------------------
     $filteredNodes = @($nodes | Where-Object { $_ -ne $null })
     $filteredEdges = @($edges | Where-Object { $_ -ne $null })
 
@@ -9860,7 +9860,7 @@ function Invoke-GitHoundEnterprise
         return
     }
 
-    # ── Related Org Installations ────────────────────────────────────────
+    # -- Related Org Installations ----------------------------------------
     Write-Host "[*] Enumerating GitHub App installations"
     $allInstallations = @(Get-GitHubAppInstallation -Session $Session)
     $relatedOrgLogins = @(
@@ -9930,9 +9930,9 @@ function Invoke-GitHoundEnterprise
     Write-Host "[+] GitHound enterprise wrapper complete for $enterpriseSlug."
 }
 
-# ══════════════════════════════════════════════════════════════════════════════
+# ==============================================================================
 # GHES-SPECIFIC FUNCTIONS
-# ══════════════════════════════════════════════════════════════════════════════
+# ==============================================================================
 
 function Git-HoundGHESAllUsers
 {
@@ -10159,9 +10159,9 @@ function Invoke-GitHoundGHES
     $ServerUrl = $ServerUrl.TrimEnd('/')
     $apiUri = "$ServerUrl/api/v3/"
 
-    Write-Host "╔══════════════════════════════════════════════════════════════╗"
-    Write-Host "║  GHESHound — GitHub Enterprise Server Collector (LDAP mode) ║"
-    Write-Host "╚══════════════════════════════════════════════════════════════╝"
+    Write-Host "+==============================================================+"
+    Write-Host "|  GHESHound -- GitHub Enterprise Server Collector (LDAP mode) |"
+    Write-Host "+==============================================================+"
     Write-Host "[*] Target: $ServerUrl"
 
     # Create GHES session
@@ -10169,7 +10169,7 @@ function Invoke-GitHoundGHES
     if ($SkipCertificateCheck) { $sessionParams['SkipCertificateCheck'] = $true }
     $baseSession = New-GithubSession @sessionParams
 
-    # ── Step 1: Discover Organizations ───────────────────────────────────
+    # -- Step 1: Discover Organizations -----------------------------------
     if ($OrganizationName) {
         $orgLogins = @($OrganizationName)
         Write-Host "[*] Single-org mode: targeting '$OrganizationName'"
@@ -10178,7 +10178,7 @@ function Invoke-GitHoundGHES
         $orgLogins = @($orgs | ForEach-Object { $_.login })
     }
 
-    # ── Step 2: Server-wide LDAP Identity Collection ─────────────────────
+    # -- Step 2: Server-wide LDAP Identity Collection ---------------------
     $ldapStepFile = Join-Path $CheckpointPath "githound_GHESLdapIdentity.json"
     if ($Resume -and (Test-Path $ldapStepFile)) {
         Write-Host "[*] Resuming: Loaded GHES LDAP Identity data from githound_GHESLdapIdentity.json"
@@ -10202,10 +10202,10 @@ function Invoke-GitHoundGHES
     $ldapEdgeCount = @($ldapIdentity.Edges | Where-Object { $_ -ne $null }).Count
     Write-Host "[+] LDAP identity payload: githound_ldap_identity.json ($ldapNodeCount nodes, $ldapEdgeCount edges)"
 
-    # ── Step 3: Per-Organization Collection ──────────────────────────────
+    # -- Step 3: Per-Organization Collection ------------------------------
     foreach ($orgLogin in $orgLogins) {
         Write-Host ""
-        Write-Host "[*] ═══ Organization: $orgLogin ═══"
+        Write-Host "[*] === Organization: $orgLogin ==="
 
         $orgCheckpointPath = if ($orgLogins.Count -gt 1) {
             $p = Join-Path $CheckpointPath $orgLogin
@@ -10233,7 +10233,7 @@ function Invoke-GitHoundGHES
         Invoke-GitHound @invokeParams
     }
 
-    # ── Cleanup ──────────────────────────────────────────────────────────
+    # -- Cleanup ----------------------------------------------------------
     if ($CleanupIntermediates) {
         $ldapStepFile = Join-Path $CheckpointPath "githound_GHESLdapIdentity.json"
         if (Test-Path $ldapStepFile) {
