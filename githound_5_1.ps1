@@ -1296,6 +1296,7 @@ function Write-GitHoundJsonStreaming
     )
 
     $writer = $null
+    $batchSize = 500
     try {
         # Resolve to absolute path using PowerShell's CWD (handles UNC paths correctly)
         if ([System.IO.Path]::IsPathRooted($FilePath)) {
@@ -1313,28 +1314,36 @@ function Write-GitHoundJsonStreaming
         $writer.WriteLine('  "graph": {')
 
         # Nodes
-        $writer.WriteLine('    "nodes": [')
-        for ($i = 0; $i -lt $Nodes.Count; $i++) {
-            $json = $Nodes[$i] | ConvertTo-Json -Depth 10 -Compress
-            if ($i -lt $Nodes.Count - 1) {
-                $writer.WriteLine("      $json,")
+        $writer.Write('    "nodes": [')
+        for ($i = 0; $i -lt $Nodes.Count; $i += $batchSize) {
+            $end = [Math]::Min($i + $batchSize, $Nodes.Count)
+            $batch = @($Nodes[$i..($end - 1)])
+            $json = ConvertTo-Json -InputObject $batch -Depth 10 -Compress
+            if ($json[0] -eq '[') {
+                $inner = $json.Substring(1, $json.Length - 2)
             } else {
-                $writer.WriteLine("      $json")
+                $inner = $json  # single item, no brackets to strip
             }
+            if ($i -gt 0) { $writer.Write(',') }
+            $writer.Write($inner)
         }
-        $writer.WriteLine('    ],')
+        $writer.WriteLine('],')
 
         # Edges
-        $writer.WriteLine('    "edges": [')
-        for ($i = 0; $i -lt $Edges.Count; $i++) {
-            $json = $Edges[$i] | ConvertTo-Json -Depth 10 -Compress
-            if ($i -lt $Edges.Count - 1) {
-                $writer.WriteLine("      $json,")
+        $writer.Write('    "edges": [')
+        for ($i = 0; $i -lt $Edges.Count; $i += $batchSize) {
+            $end = [Math]::Min($i + $batchSize, $Edges.Count)
+            $batch = @($Edges[$i..($end - 1)])
+            $json = ConvertTo-Json -InputObject $batch -Depth 10 -Compress
+            if ($json[0] -eq '[') {
+                $inner = $json.Substring(1, $json.Length - 2)
             } else {
-                $writer.WriteLine("      $json")
+                $inner = $json
             }
+            if ($i -gt 0) { $writer.Write(',') }
+            $writer.Write($inner)
         }
-        $writer.WriteLine('    ]')
+        $writer.WriteLine(']')
 
         $writer.WriteLine('  }')
         $writer.WriteLine('}')
