@@ -1233,6 +1233,8 @@ function Export-GitHoundStepOutput
         GitHound format. Filters out null entries that may have been introduced by thread-safety
         issues or API errors.
 
+        Uses a streaming approach to avoid OutOfMemoryException on large datasets in PS 5.1.
+
     .PARAMETER StepResult
         A PSCustomObject with Nodes and Edges properties (as returned by collection functions).
 
@@ -1250,17 +1252,91 @@ function Export-GitHoundStepOutput
         [string]$FilePath
     )
 
-    $payload = [PSCustomObject]@{
-        metadata = [PSCustomObject]@{
-            source_kind = "GitHub"
-        }
-        graph = [PSCustomObject]@{
-            nodes = @($StepResult.Nodes | Where-Object { $_ -ne $null })
-            edges = @($StepResult.Edges | Where-Object { $_ -ne $null })
-        }
-    }
+    $filteredNodes = @($StepResult.Nodes | Where-Object { $_ -ne $null })
+    $filteredEdges = @($StepResult.Edges | Where-Object { $_ -ne $null })
 
-    $payload | ConvertTo-Json -Depth 10 | Out-File -FilePath $FilePath
+    Write-GitHoundJsonStreaming -Nodes $filteredNodes -Edges $filteredEdges -FilePath $FilePath
+}
+
+function Write-GitHoundJsonStreaming
+{
+    <#
+    .SYNOPSIS
+        Writes nodes and edges to a JSON file using streaming to avoid OutOfMemoryException.
+
+    .DESCRIPTION
+        Serializes each node/edge individually with ConvertTo-Json -Compress and writes them
+        one at a time via StreamWriter. This avoids the PS 5.1 ConvertTo-Json OOM issue
+        when serializing large arrays (e.g. 60k+ nodes, 1M+ edges).
+
+    .PARAMETER Nodes
+        Array of node objects.
+
+    .PARAMETER Edges
+        Array of edge objects.
+
+    .PARAMETER FilePath
+        Output file path.
+
+    .PARAMETER Schema
+        Optional schema URI. If provided, adds a $schema property to the root object.
+    #>
+    Param(
+        [Parameter(Mandatory)]
+        [array]$Nodes,
+
+        [Parameter(Mandatory)]
+        [array]$Edges,
+
+        [Parameter(Mandatory)]
+        [string]$FilePath,
+
+        [Parameter()]
+        [string]$Schema
+    )
+
+    $writer = $null
+    try {
+        $fullPath = [System.IO.Path]::GetFullPath($FilePath)
+        $writer = New-Object System.IO.StreamWriter($fullPath, $false, [System.Text.Encoding]::UTF8)
+
+        $writer.WriteLine('{')
+        if ($Schema) {
+            $writer.WriteLine("  `"`$schema`": `"$Schema`",")
+        }
+        $writer.WriteLine('  "metadata": { "source_kind": "GitHub" },')
+        $writer.WriteLine('  "graph": {')
+
+        # Nodes
+        $writer.WriteLine('    "nodes": [')
+        for ($i = 0; $i -lt $Nodes.Count; $i++) {
+            $json = $Nodes[$i] | ConvertTo-Json -Depth 10 -Compress
+            if ($i -lt $Nodes.Count - 1) {
+                $writer.WriteLine("      $json,")
+            } else {
+                $writer.WriteLine("      $json")
+            }
+        }
+        $writer.WriteLine('    ],')
+
+        # Edges
+        $writer.WriteLine('    "edges": [')
+        for ($i = 0; $i -lt $Edges.Count; $i++) {
+            $json = $Edges[$i] | ConvertTo-Json -Depth 10 -Compress
+            if ($i -lt $Edges.Count - 1) {
+                $writer.WriteLine("      $json,")
+            } else {
+                $writer.WriteLine("      $json")
+            }
+        }
+        $writer.WriteLine('    ]')
+
+        $writer.WriteLine('  }')
+        $writer.WriteLine('}')
+    }
+    finally {
+        if ($writer) { $writer.Close() }
+    }
 }
 
 function ConvertTo-PascalCase
@@ -9514,16 +9590,7 @@ function Invoke-GitHound
         Write-Warning "Filtered out $nullNodes null node(s) and $nullEdges null edge(s) from payload"
     }
     $consolidatedFile = Join-Path $CheckpointPath "githound_$orgId.json"
-    $payload = [PSCustomObject]@{
-        '$schema' = "https://raw.githubusercontent.com/MichaelGrafnetter/EntraAuthPolicyHound/refs/heads/main/bloodhound-opengraph.schema.json"
-        metadata = [PSCustomObject]@{
-            source_kind = "GitHub"
-        }
-        graph = [PSCustomObject]@{
-            nodes = $filteredNodes
-            edges = $filteredEdges
-        }
-    } | ConvertTo-Json -Depth 10 | Out-File -FilePath $consolidatedFile
+    Write-GitHoundJsonStreaming -Nodes $filteredNodes -Edges $filteredEdges -FilePath $consolidatedFile -Schema "https://raw.githubusercontent.com/MichaelGrafnetter/EntraAuthPolicyHound/refs/heads/main/bloodhound-opengraph.schema.json"
     Write-Host "[+] Consolidated payload: $consolidatedFile ($($filteredNodes.Count) nodes, $($filteredEdges.Count) edges)"
 
     # -- Cleanup Intermediates ---------------------------------------------
@@ -10325,16 +10392,12 @@ function Invoke-GitHoundGHES
         }
 
         # Write LDAP identity payload (separate file, like SAML in cloud mode)
-        $ldapPayload = [PSCustomObject]@{
-            '$schema' = "https://raw.githubusercontent.com/MichaelGrafnetter/EntraAuthPolicyHound/refs/heads/main/bloodhound-opengraph.schema.json"
-            graph = [PSCustomObject]@{
-                nodes = @($ldapIdentity.Nodes | Where-Object { $_ -ne $null })
-                edges = @($ldapIdentity.Edges | Where-Object { $_ -ne $null })
-            }
-        }
-        $ldapPayload | ConvertTo-Json -Depth 10 | Out-File -FilePath (Join-Path $CheckpointPath "githound_ldap_identity.json")
-        $ldapNodeCount = @($ldapIdentity.Nodes | Where-Object { $_ -ne $null }).Count
-        $ldapEdgeCount = @($ldapIdentity.Edges | Where-Object { $_ -ne $null }).Count
+        $ldapNodes = @($ldapIdentity.Nodes | Where-Object { $_ -ne $null })
+        $ldapEdges = @($ldapIdentity.Edges | Where-Object { $_ -ne $null })
+        $ldapFile = Join-Path $CheckpointPath "githound_ldap_identity.json"
+        Write-GitHoundJsonStreaming -Nodes $ldapNodes -Edges $ldapEdges -FilePath $ldapFile -Schema "https://raw.githubusercontent.com/MichaelGrafnetter/EntraAuthPolicyHound/refs/heads/main/bloodhound-opengraph.schema.json"
+        $ldapNodeCount = $ldapNodes.Count
+        $ldapEdgeCount = $ldapEdges.Count
         Write-Host "[+] LDAP identity payload: githound_ldap_identity.json ($ldapNodeCount nodes, $ldapEdgeCount edges)"
 
         if ($CollectLDAPOnly) {
