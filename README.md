@@ -194,6 +194,96 @@ For enterprise-only testing without enumerating the related organizations:
 Invoke-GitHoundEnterprise -Session $session -CheckpointPath "./output/your-enterprise" -EnterpriseOnly
 ```
 
+## GHES Collection (GitHub Enterprise Server)
+
+GitHound includes a dedicated GHES collector (`Invoke-GitHoundGHES`) for on-prem GitHub Enterprise Server instances that use LDAP authentication instead of SAML/SCIM.
+
+### Quick Start (GHES)
+
+```powershell
+# Load the collector (use githound_5_1.ps1 for PowerShell 5.1 environments)
+. ./githound_5_1.ps1
+
+# Run full collection against a single org
+Invoke-GitHoundGHES -ServerUrl "https://ghes.example.com" -Token "ghp_xxx" -OrganizationName "my-org"
+
+# Resume an interrupted collection
+Invoke-GitHoundGHES -ServerUrl "https://ghes.example.com" -Token "ghp_xxx" -OrganizationName "my-org" -Resume
+```
+
+### PowerShell 5.1 Compatibility
+
+`githound_5_1.ps1` is a port of the main `githound.ps1` collector adapted for PowerShell 5.1 environments (e.g. Windows jump boxes without PS 7). Key differences:
+
+- Uses `Invoke-WebRequest -UseBasicParsing` instead of `-SkipCertificateCheck`
+- Sequential `foreach` loops instead of `ForEach-Object -Parallel`
+- `ArrayList` instead of `ConcurrentBag`
+- `ServicePointManager` certificate bypass instead of per-request cert skip
+- All ASCII output (no Unicode box-drawing characters)
+
+### Large Environment Parameters
+
+For large GHES instances (thousands of users), LDAP identity collection can be very slow due to per-user API calls and rate limiting. Two parameters allow you to decouple LDAP collection from org collection:
+
+| Parameter | Description |
+|-----------|-------------|
+| `-SkipLDAP` | Skips the server-wide LDAP identity collection entirely. Runs org/repo/team collection only. |
+| `-CollectLDAPOnly` | Runs **only** LDAP identity collection and exits. Does not collect org data. |
+
+```powershell
+# Collect org data now, skip the slow LDAP enumeration
+Invoke-GitHoundGHES -ServerUrl "https://ghes.example.com" -Token "ghp_xxx" -OrganizationName "my-org" -SkipLDAP
+
+# Run LDAP collection separately (e.g. overnight when rate limits are less of a concern)
+Invoke-GitHoundGHES -ServerUrl "https://ghes.example.com" -Token "ghp_xxx" -CollectLDAPOnly
+```
+
+Both produce independent JSON files that can be ingested into BloodHound separately.
+
+### Per-Step Skip Flags
+
+Every collection step can be individually skipped via `-Skip*` flags on both `Invoke-GitHound` and `Invoke-GitHoundGHES`:
+
+| Flag | Step | Runs By Default |
+|------|------|:---------------:|
+| `-SkipUsers` | Organization Users | Yes |
+| `-SkipTeams` | Teams | Yes |
+| `-SkipRepos` | Repositories | Yes |
+| `-SkipRepoRoles` | Repository Roles | Yes |
+| `-SkipBranches` | Branches + computed access edges | Yes |
+| `-SkipOrgSecrets` | Organization Secrets | Yes |
+| `-SkipSecretAlerts` | Secret Scanning Alerts + computed edges | Yes |
+| `-SkipWorkflows` | Workflows | `-CollectAll` |
+| `-SkipRunners` | Self-Hosted Runners | `-CollectAll` |
+| `-SkipEnvironments` | Environments | `-CollectAll` |
+| `-SkipRepoSecrets` | Repository Secrets | `-CollectAll` |
+| `-SkipVariables` | Repository Variables | `-CollectAll` |
+| `-SkipWorkflowAnalysis` | Workflow Analysis | `-CollectAll` |
+| `-SkipAppInstallations` | App Installations | `-CollectAll` |
+| `-SkipPATs` | Personal Access Tokens | `-CollectAll` |
+| `-SkipPATRequests` | PAT Requests | `-CollectAll` |
+
+> Organization (Step 1) always runs — it bootstraps the org ID needed by all other steps.
+
+```powershell
+# Collect everything except secrets and branches
+Invoke-GitHoundGHES -ServerUrl "https://ghes.example.com" -Token $token -OrganizationName "my-org" -SkipLDAP -SkipBranches -SkipOrgSecrets -SkipSecretAlerts -CollectAll -SkipRepoSecrets
+
+# Only collect org structure (org + users + teams + repos), skip everything else
+Invoke-GitHoundGHES -ServerUrl "https://ghes.example.com" -Token $token -OrganizationName "my-org" -SkipLDAP -SkipRepoRoles -SkipBranches -SkipOrgSecrets -SkipSecretAlerts
+```
+
+### Required PAT Scopes (GHES)
+
+| Scope | Purpose |
+|-------|---------|
+| `repo` | Repository metadata, collaborators, branch protections |
+| `admin:org` | Org membership, teams, org-level settings |
+| `admin:enterprise` | Enterprise-level data (if applicable) |
+| `security_events` | Secret scanning alerts, code scanning |
+
+> **Note:** The `site_admin` scope is not required. The `/users` endpoint works with `admin:org` on most GHES instances.
+
 ## Schema
 
 ![Mermaid Schema](./Documentation/images/GitHound-Mermaid.png)

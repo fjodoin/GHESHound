@@ -3376,7 +3376,8 @@ function Git-HoundOrganization
 
     # Custom Organization Roles
     # In general parallelizing this is a bad idea, because most organizations have a small number of custom roles
-    foreach($customrole in (Invoke-GithubRestMethod -Session $session -Path "orgs/$($org.login)/organization-roles").roles)
+    try {
+    foreach($customrole in (Invoke-GithubRestMethod -Session $session -Path "orgs/$($org.login)/organization-roles" -ErrorMode Stop).roles)
     {
         $customRoleId = "$($orgNode.id)_$($customrole.name)"
         $customRoleProps = [pscustomobject]@{
@@ -3471,6 +3472,7 @@ function Git-HoundOrganization
             }
         }
     }
+    } catch { Write-Host "[*] Skipped: orgs/organization-roles (not available on this instance)" }
 
     # Default Organization Role: Owners
     $orgOwnersId = "$($orgNode.id)_owners"
@@ -4020,7 +4022,12 @@ function Git-HoundRepository
     }
 
     # Pre-loop setup: Custom repository roles and org-level all_repo_* IDs
-    $customRepoRoles = (Invoke-GithubRestMethod -Session $Session -Path "orgs/$($Organization.Properties.login)/custom-repository-roles").custom_roles
+    try {
+        $customRepoRoles = (Invoke-GithubRestMethod -Session $Session -Path "orgs/$($Organization.Properties.login)/custom-repository-roles" -ErrorMode Stop).custom_roles
+    } catch {
+        Write-Host "[*] Skipped: orgs/custom-repository-roles (not available on this instance)"
+        $customRepoRoles = @()
+    }
 
     $orgAllRepoReadId = "$($Organization.id)_all_repo_read"
     $orgAllRepoTriageId = "$($Organization.id)_all_repo_triage"
@@ -4029,7 +4036,9 @@ function Git-HoundRepository
     $orgAllRepoAdminId = "$($Organization.id)_all_repo_admin"
 
     # Per-repo processing: create repo node, role nodes, and fetch collaborator/team assignments
-    foreach ($repo in (Invoke-GithubRestMethod -Session $Session -Path "orgs/$($Organization.Properties.login)/repos")) {
+    $allRepos = @(Invoke-GithubRestMethod -Session $Session -Path "orgs/$($Organization.Properties.login)/repos" -ErrorMode Stop)
+    Write-Host "[*] Git-HoundRepository: Found $($allRepos.Count) repositories in $($Organization.Properties.login)"
+    foreach ($repo in $allRepos) {
 
         # --- Repository Node ---
         if($actions.enabled_repositories -eq 'all')
@@ -4637,7 +4646,8 @@ function Git-HoundRepositoryRole
                 $repoMaintainId = "$($repo.properties.node_id)_maintain"
 
                 # --- Role Assignments: Direct Collaborators ---
-                foreach($collaborator in (Invoke-GithubRestMethod -Session $Session -Path "repos/$($repo.properties.environment_name)/$($repo.properties.name)/collaborators?affiliation=direct"))
+                try {
+                foreach($collaborator in (Invoke-GithubRestMethod -Session $Session -Path "repos/$($repo.properties.environment_name)/$($repo.properties.name)/collaborators?affiliation=direct" -ErrorMode Stop))
                 {
                     switch($collaborator.role_name)
                     {
@@ -4650,9 +4660,11 @@ function Git-HoundRepositoryRole
                     }
                     $null = $chunkEdges.Add((New-GitHoundEdge -Kind 'GH_HasRole' -StartId $collaborator.node_id -EndId $repoRoleId -Properties @{traversable=$true}))
                 }
+                } catch {} # 404 expected with read-only PAT (requires push/admin access)
 
                 # --- Role Assignments: Teams ---
-                foreach($team in (Invoke-GithubRestMethod -Session $Session -Path "repos/$($repo.properties.environment_name)/$($repo.properties.name)/teams"))
+                try {
+                foreach($team in (Invoke-GithubRestMethod -Session $Session -Path "repos/$($repo.properties.environment_name)/$($repo.properties.name)/teams" -ErrorMode Stop))
                 {
                     switch($team.permission)
                     {
@@ -4673,6 +4685,7 @@ function Git-HoundRepositoryRole
                         $null = $chunkEdges.Add((New-GitHoundEdge -Kind 'GH_HasRole' -StartId $team.node_id -EndId $repoRoleId -Properties @{traversable=$true}))
                     }
                 }
+                } catch {} # 404 expected with read-only PAT (requires push/admin access)
             }
 
             # Accumulate chunk results
@@ -9071,7 +9084,25 @@ function Invoke-GitHound
 
         [Parameter()]
         [string]
-        $RepositoryName
+        $RepositoryName,
+
+        # -- Skip Flags (selectively disable collection steps) ----------------
+        [Parameter()] [switch] $SkipUsers,
+        [Parameter()] [switch] $SkipTeams,
+        [Parameter()] [switch] $SkipRepos,
+        [Parameter()] [switch] $SkipRepoRoles,
+        [Parameter()] [switch] $SkipBranches,
+        [Parameter()] [switch] $SkipWorkflows,
+        [Parameter()] [switch] $SkipRunners,
+        [Parameter()] [switch] $SkipEnvironments,
+        [Parameter()] [switch] $SkipOrgSecrets,
+        [Parameter()] [switch] $SkipRepoSecrets,
+        [Parameter()] [switch] $SkipVariables,
+        [Parameter()] [switch] $SkipWorkflowAnalysis,
+        [Parameter()] [switch] $SkipSecretAlerts,
+        [Parameter()] [switch] $SkipAppInstallations,
+        [Parameter()] [switch] $SkipPATs,
+        [Parameter()] [switch] $SkipPATRequests
     )
 
     $nodes = New-Object System.Collections.ArrayList
@@ -9107,6 +9138,7 @@ function Invoke-GitHound
     if($org.edges) { $edges.AddRange(@($org.edges)) }
 
     # -- Step 2: Users ------------------------------------------------------
+    if ($SkipUsers) { Write-Host "[*] Skipping Users (-SkipUsers)" } else {
     $stepFile = Join-Path $CheckpointPath "githound_User_$orgId.json"
     if ($Resume -and (Test-Path $stepFile)) {
         Write-Host "[*] Resuming: Loaded Users from githound_User_$orgId.json"
@@ -9119,8 +9151,10 @@ function Invoke-GitHound
     }
     if($users.nodes) { $nodes.AddRange(@($users.nodes)) }
     if($users.edges) { $edges.AddRange(@($users.edges)) }
+    } # /SkipUsers
 
     # -- Step 3: Teams ------------------------------------------------------
+    if ($SkipTeams) { Write-Host "[*] Skipping Teams (-SkipTeams)" } else {
     $stepFile = Join-Path $CheckpointPath "githound_Team_$orgId.json"
     if ($Resume -and (Test-Path $stepFile)) {
         Write-Host "[*] Resuming: Loaded Teams from githound_Team_$orgId.json"
@@ -9133,8 +9167,10 @@ function Invoke-GitHound
     }
     if($teams.nodes) { $nodes.AddRange(@($teams.nodes)) }
     if($teams.edges) { $edges.AddRange(@($teams.edges)) }
+    } # /SkipTeams
 
     # -- Step 4: Repositories ----------------------------------------------
+    if ($SkipRepos) { Write-Host "[*] Skipping Repositories (-SkipRepos)" } else {
     $stepFile = Join-Path $CheckpointPath "githound_Repository_$orgId.json"
     if ($Resume -and (Test-Path $stepFile)) {
         Write-Host "[*] Resuming: Loaded Repositories from githound_Repository_$orgId.json"
@@ -9142,8 +9178,13 @@ function Invoke-GitHound
     } else {
         Write-Host "[*] Enumerating Organization Repositories"
         $repos = $org.nodes[0] | Git-HoundRepository -Session $Session
+        $repoNodeCount = @($repos.nodes | Where-Object { $_.kinds -contains 'GH_Repository' }).Count
+        if ($repoNodeCount -eq 0) {
+            Write-Host "[!] WARNING: 0 repositories returned. Your PAT may lack the 'repo' scope or org membership." -ForegroundColor Yellow
+            Write-Host "[!] Test manually: Invoke-WebRequest -UseBasicParsing -Uri '$($Session.Uri)orgs/$($Session.OrganizationName)/repos?per_page=1' -Headers @{Authorization='Bearer <token>';Accept='application/vnd.github+json'}" -ForegroundColor Yellow
+        }
         Export-GitHoundStepOutput -StepResult $repos -FilePath $stepFile
-        Write-Host "[+] Saved: githound_Repository_$orgId.json"
+        Write-Host "[+] Saved: githound_Repository_$orgId.json ($repoNodeCount repos)"
     }
     # -- Repository Filter ---------------------------------------------
     if ($RepositoryName) {
@@ -9161,8 +9202,10 @@ function Invoke-GitHound
 
     if($repos.nodes) { $nodes.AddRange(@($repos.nodes)) }
     if($repos.edges) { $edges.AddRange(@($repos.edges)) }
+    } # /SkipRepos
 
     # -- Step 5: Repository Roles ------------------------------------------
+    if ($SkipRepoRoles) { Write-Host "[*] Skipping Repository Roles (-SkipRepoRoles)" } else {
     # Check for per-step file, then _complete.json from internal checkpointing
     $stepFile = Join-Path $CheckpointPath "githound_RepoRole_$orgId.json"
     $completeFile = Join-Path $CheckpointPath "githound_RepoRole_complete.json"
@@ -9182,8 +9225,10 @@ function Invoke-GitHound
     }
     if($reporoles.nodes) { $nodes.AddRange(@($reporoles.nodes)) }
     if($reporoles.edges) { $edges.AddRange(@($reporoles.edges)) }
+    } # /SkipRepoRoles
 
     # -- Step 6: Branches --------------------------------------------------
+    if ($SkipBranches) { Write-Host "[*] Skipping Branches (-SkipBranches)" } else {
     $stepFile = Join-Path $CheckpointPath "githound_Branch_$orgId.json"
     $completeFile = Join-Path $CheckpointPath "githound_Branch_complete.json"
     if ($Resume -and (Test-Path $stepFile)) {
@@ -9202,14 +9247,19 @@ function Invoke-GitHound
     }
     if($branches.nodes) { $nodes.AddRange(@($branches.nodes)) }
     if($branches.edges) { $edges.AddRange(@($branches.edges)) }
+    } # /SkipBranches
 
     # -- Computed Edges: Branch Access ----------------------------------------
+    if (-not $SkipBranches) {
     Write-Host "[*] Computing branch access edges (GH_CanWriteBranch, GH_CanCreateBranch, GH_CanEditProtection)"
     $branchAccess = Compute-GitHoundBranchAccess -Nodes $nodes -Edges $edges
     if($branchAccess.edges) { $edges.AddRange(@($branchAccess.edges)) }
+    } # /BranchAccess
 
     # -- Step 7: Workflows (requires -CollectAll) ----------------------------
-    if ($CollectAll) {
+    if ($SkipWorkflows) {
+        Write-Host "[*] Skipping Workflows (-SkipWorkflows)"
+    } elseif ($CollectAll) {
         $stepFile = Join-Path $CheckpointPath "githound_Workflow_$orgId.json"
         $completeFile = Join-Path $CheckpointPath "githound_Workflow_complete.json"
         if ($Resume -and (Test-Path $stepFile)) {
@@ -9238,7 +9288,9 @@ function Invoke-GitHound
     }
 
     # -- Step 7.5: Self-Hosted Runners (requires -CollectAll) --------------
-    if ($CollectAll) {
+    if ($SkipRunners) {
+        Write-Host "[*] Skipping Self-Hosted Runners (-SkipRunners)"
+    } elseif ($CollectAll) {
         $stepFile = Join-Path $CheckpointPath "githound_Runner_$orgId.json"
         if ($Resume -and (Test-Path $stepFile)) {
             Write-Host "[*] Resuming: Loaded Self-Hosted Runners from githound_Runner_$orgId.json"
@@ -9256,7 +9308,9 @@ function Invoke-GitHound
     }
 
     # -- Step 8: Environments (requires -CollectAll) -----------------------
-    if ($CollectAll) {
+    if ($SkipEnvironments) {
+        Write-Host "[*] Skipping Environments (-SkipEnvironments)"
+    } elseif ($CollectAll) {
         $stepFile = Join-Path $CheckpointPath "githound_Environment_$orgId.json"
         if ($Resume -and (Test-Path $stepFile)) {
             Write-Host "[*] Resuming: Loaded Environments from githound_Environment_$orgId.json"
@@ -9274,6 +9328,7 @@ function Invoke-GitHound
     }
 
     # -- Step 9: Organization Secrets ---------------------------------------
+    if ($SkipOrgSecrets) { Write-Host "[*] Skipping Organization Secrets (-SkipOrgSecrets)" } else {
     $stepFile = Join-Path $CheckpointPath "githound_OrgSecret_$orgId.json"
     if ($Resume -and (Test-Path $stepFile)) {
         Write-Host "[*] Resuming: Loaded Organization Secrets from githound_OrgSecret_$orgId.json"
@@ -9286,9 +9341,12 @@ function Invoke-GitHound
     }
     if($orgsecrets.nodes) { $nodes.AddRange(@($orgsecrets.nodes)) }
     if($orgsecrets.edges) { $edges.AddRange(@($orgsecrets.edges)) }
+    } # /SkipOrgSecrets
 
     # -- Step 10: Repository Secrets (requires -CollectAll) -----------------
-    if ($CollectAll) {
+    if ($SkipRepoSecrets) {
+        Write-Host "[*] Skipping Repository Secrets (-SkipRepoSecrets)"
+    } elseif ($CollectAll) {
         $stepFile = Join-Path $CheckpointPath "githound_Secret_$orgId.json"
         $completeFile = Join-Path $CheckpointPath "githound_Secret_complete.json"
         if ($Resume -and (Test-Path $stepFile)) {
@@ -9312,7 +9370,9 @@ function Invoke-GitHound
     }
 
     # -- Step 10.5: Repository Variables (requires -CollectAll) ----------
-    if ($CollectAll) {
+    if ($SkipVariables) {
+        Write-Host "[*] Skipping Repository Variables (-SkipVariables)"
+    } elseif ($CollectAll) {
         $stepFile = Join-Path $CheckpointPath "githound_Variable_$orgId.json"
         $completeFile = Join-Path $CheckpointPath "githound_Variable_complete.json"
         if ($Resume -and (Test-Path $stepFile)) {
@@ -9336,7 +9396,9 @@ function Invoke-GitHound
     }
 
     # -- Step 10.75: Workflow Analysis (requires -CollectAll) -------------
-    if ($CollectAll) {
+    if ($SkipWorkflowAnalysis) {
+        Write-Host "[*] Skipping Workflow Analysis (-SkipWorkflowAnalysis)"
+    } elseif ($CollectAll) {
         $stepFile = Join-Path $CheckpointPath "githound_WorkflowAnalysis_$orgId.json"
         if ($Resume -and (Test-Path $stepFile)) {
             Write-Host "[*] Resuming: Loaded Workflow Analysis from githound_WorkflowAnalysis_$orgId.json"
@@ -9359,6 +9421,7 @@ function Invoke-GitHound
     }
 
     # -- Step 11: Secret Scanning Alerts ---------------------------------
+    if ($SkipSecretAlerts) { Write-Host "[*] Skipping Secret Scanning Alerts (-SkipSecretAlerts)" } else {
     $stepFile = Join-Path $CheckpointPath "githound_SecretAlerts_$orgId.json"
     if ($Resume -and (Test-Path $stepFile)) {
         Write-Host "[*] Resuming: Loaded Secret Scanning Alerts from githound_SecretAlerts_$orgId.json"
@@ -9371,14 +9434,19 @@ function Invoke-GitHound
     }
     if($secretalerts.nodes) { $nodes.AddRange(@($secretalerts.nodes)) }
     if($secretalerts.edges) { $edges.AddRange(@($secretalerts.edges)) }
+    } # /SkipSecretAlerts
 
     # -- Computed Edges: Secret Scanning Access ----------------------------
+    if (-not $SkipSecretAlerts) {
     Write-Host "[*] Computing secret scanning access edges (GH_CanReadSecretScanningAlert)"
     $secretScanningAccess = Compute-GitHoundSecretScanningAccess -Nodes $nodes -Edges $edges
     if($secretScanningAccess.edges) { $edges.AddRange(@($secretScanningAccess.edges)) }
+    } # /SecretScanningAccess
 
     # -- Step 12: App Installations (requires -CollectAll) ------------------
-    if ($CollectAll) {
+    if ($SkipAppInstallations) {
+        Write-Host "[*] Skipping App Installations (-SkipAppInstallations)"
+    } elseif ($CollectAll) {
         $stepFile = Join-Path $CheckpointPath "githound_AppInstallation_$orgId.json"
         if ($Resume -and (Test-Path $stepFile)) {
             Write-Host "[*] Resuming: Loaded App Installations from githound_AppInstallation_$orgId.json"
@@ -9396,7 +9464,9 @@ function Invoke-GitHound
     }
 
     # -- Step 13: Personal Access Tokens (requires -CollectAll) ----------
-    if ($CollectAll) {
+    if ($SkipPATs) {
+        Write-Host "[*] Skipping Personal Access Tokens (-SkipPATs)"
+    } elseif ($CollectAll) {
         $stepFile = Join-Path $CheckpointPath "githound_PersonalAccessToken_$orgId.json"
         if ($Resume -and (Test-Path $stepFile)) {
             Write-Host "[*] Resuming: Loaded Personal Access Tokens from githound_PersonalAccessToken_$orgId.json"
@@ -9414,7 +9484,9 @@ function Invoke-GitHound
     }
 
     # -- Step 14: Personal Access Token Requests (requires -CollectAll) --
-    if ($CollectAll) {
+    if ($SkipPATRequests) {
+        Write-Host "[*] Skipping Personal Access Token Requests (-SkipPATRequests)"
+    } elseif ($CollectAll) {
         $stepFile = Join-Path $CheckpointPath "githound_PersonalAccessTokenRequest_$orgId.json"
         if ($Resume -and (Test-Path $stepFile)) {
             Write-Host "[*] Resuming: Loaded Personal Access Token Requests from githound_PersonalAccessTokenRequest_$orgId.json"
@@ -10185,7 +10257,25 @@ function Invoke-GitHoundGHES
 
         [Parameter()]
         [switch]
-        $CollectLDAPOnly
+        $CollectLDAPOnly,
+
+        # -- Skip Flags (passed through to Invoke-GitHound) -------------------
+        [Parameter()] [switch] $SkipUsers,
+        [Parameter()] [switch] $SkipTeams,
+        [Parameter()] [switch] $SkipRepos,
+        [Parameter()] [switch] $SkipRepoRoles,
+        [Parameter()] [switch] $SkipBranches,
+        [Parameter()] [switch] $SkipWorkflows,
+        [Parameter()] [switch] $SkipRunners,
+        [Parameter()] [switch] $SkipEnvironments,
+        [Parameter()] [switch] $SkipOrgSecrets,
+        [Parameter()] [switch] $SkipRepoSecrets,
+        [Parameter()] [switch] $SkipVariables,
+        [Parameter()] [switch] $SkipWorkflowAnalysis,
+        [Parameter()] [switch] $SkipSecretAlerts,
+        [Parameter()] [switch] $SkipAppInstallations,
+        [Parameter()] [switch] $SkipPATs,
+        [Parameter()] [switch] $SkipPATRequests
     )
 
     # Normalize server URL
@@ -10281,7 +10371,23 @@ function Invoke-GitHoundGHES
             WorkflowsAllBranches  = $WorkflowsAllBranches
             IsGHES                = $true
         }
-        if ($RepositoryName) { $invokeParams['RepositoryName'] = $RepositoryName }
+        if ($RepositoryName)       { $invokeParams['RepositoryName']       = $RepositoryName }
+        if ($SkipUsers)            { $invokeParams['SkipUsers']            = $true }
+        if ($SkipTeams)            { $invokeParams['SkipTeams']            = $true }
+        if ($SkipRepos)            { $invokeParams['SkipRepos']            = $true }
+        if ($SkipRepoRoles)        { $invokeParams['SkipRepoRoles']        = $true }
+        if ($SkipBranches)         { $invokeParams['SkipBranches']         = $true }
+        if ($SkipWorkflows)        { $invokeParams['SkipWorkflows']        = $true }
+        if ($SkipRunners)          { $invokeParams['SkipRunners']          = $true }
+        if ($SkipEnvironments)     { $invokeParams['SkipEnvironments']     = $true }
+        if ($SkipOrgSecrets)       { $invokeParams['SkipOrgSecrets']       = $true }
+        if ($SkipRepoSecrets)      { $invokeParams['SkipRepoSecrets']      = $true }
+        if ($SkipVariables)        { $invokeParams['SkipVariables']        = $true }
+        if ($SkipWorkflowAnalysis) { $invokeParams['SkipWorkflowAnalysis'] = $true }
+        if ($SkipSecretAlerts)     { $invokeParams['SkipSecretAlerts']     = $true }
+        if ($SkipAppInstallations) { $invokeParams['SkipAppInstallations'] = $true }
+        if ($SkipPATs)             { $invokeParams['SkipPATs']             = $true }
+        if ($SkipPATRequests)      { $invokeParams['SkipPATRequests']      = $true }
 
         Invoke-GitHound @invokeParams
     }
