@@ -1297,7 +1297,12 @@ function Write-GitHoundJsonStreaming
 
     $writer = $null
     try {
-        $fullPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($FilePath)
+        # Resolve to absolute path using PowerShell's CWD (handles UNC paths correctly)
+        if ([System.IO.Path]::IsPathRooted($FilePath)) {
+            $fullPath = $FilePath
+        } else {
+            $fullPath = Join-Path $PWD.ProviderPath $FilePath
+        }
         $writer = New-Object System.IO.StreamWriter($fullPath, $false, [System.Text.Encoding]::UTF8)
 
         $writer.WriteLine('{')
