@@ -1297,7 +1297,7 @@ function Write-GitHoundJsonStreaming
 
     $writer = $null
     try {
-        $fullPath = [System.IO.Path]::GetFullPath($FilePath)
+        $fullPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($FilePath)
         $writer = New-Object System.IO.StreamWriter($fullPath, $false, [System.Text.Encoding]::UTF8)
 
         $writer.WriteLine('{')
